@@ -15,6 +15,7 @@ class AdsOptimizerEngine:
         targeting_file,
         impression_share_file,
         business_report_file=None,
+        sqp_report_file=None,
         min_roas=3.0,
         min_clicks=8,
         zero_order_click_threshold=12,
@@ -38,6 +39,7 @@ class AdsOptimizerEngine:
         self.targeting_file = targeting_file
         self.impression_share_file = impression_share_file
         self.business_report_file = business_report_file
+        self.sqp_report_file = sqp_report_file
 
         self.min_roas = float(min_roas)
         self.min_clicks = int(min_clicks)
@@ -172,6 +174,13 @@ class AdsOptimizerEngine:
             dtype=str,
         )
 
+    def load_sqp_simple_view(self):
+        if self.sqp_report_file is None:
+            return None
+
+        cloned = self._clone_file_obj(self.sqp_report_file)
+        return pd.read_csv(cloned, header=1)
+
     # -----------------------------
     # HELPERS
     # -----------------------------
@@ -183,6 +192,26 @@ class AdsOptimizerEngine:
         cleaned = cleaned.replace("nan", "")
         cleaned = cleaned.str.replace(r"\.0$", "", regex=True)
         return cleaned
+
+    def clean_percent_series(self, series):
+        cleaned = (
+            series.astype(str)
+            .str.replace("%", "", regex=False)
+            .str.replace("<", "", regex=False)
+            .str.replace(">", "", regex=False)
+            .str.replace(",", "", regex=False)
+            .str.strip()
+        )
+        return pd.to_numeric(cleaned, errors="coerce").fillna(0)
+
+    def clean_currency_series(self, series):
+        cleaned = (
+            series.astype(str)
+            .str.replace("$", "", regex=False)
+            .str.replace(",", "", regex=False)
+            .str.strip()
+        )
+        return pd.to_numeric(cleaned, errors="coerce").fillna(0)
 
     def get_first_existing_column(self, df, candidates, label):
         for col in candidates:
@@ -288,6 +317,141 @@ class AdsOptimizerEngine:
         return campaign_health
 
     # -----------------------------
+    # SQP NORMALIZATION + OPPORTUNITIES
+    # -----------------------------
+    def normalize_sqp(self):
+        if self.sqp_df is None or self.sqp_df.empty:
+            return pd.DataFrame()
+
+        df = self.sqp_df.copy()
+
+        normalized = pd.DataFrame()
+        normalized["search_query"] = self.clean_text(df["Search Query"])
+        normalized["search_query_score"] = self.safe_numeric(df["Search Query Score"])
+        normalized["search_query_volume"] = self.safe_numeric(df["Search Query Volume"])
+        normalized["impressions_total_count"] = self.safe_numeric(df["Impressions: Total Count"])
+        normalized["impressions_brand_share_pct"] = self.clean_percent_series(df["Impressions: Brand Share %"])
+        normalized["clicks_total_count"] = self.safe_numeric(df["Clicks: Total Count"])
+        normalized["clicks_click_rate_pct"] = self.clean_percent_series(df["Clicks: Click Rate %"])
+        normalized["clicks_brand_share_pct"] = self.clean_percent_series(df["Clicks: Brand Share %"])
+        normalized["cart_adds_total_count"] = self.safe_numeric(df["Cart Adds: Total Count"])
+        normalized["cart_adds_brand_share_pct"] = self.clean_percent_series(df["Cart Adds: Brand Share %"])
+        normalized["purchases_total_count"] = self.safe_numeric(df["Purchases: Total Count"])
+        normalized["purchase_rate_pct"] = self.clean_percent_series(df["Purchases: Purchase Rate %"])
+        normalized["purchases_brand_share_pct"] = self.clean_percent_series(df["Purchases: Brand Share %"])
+
+        reporting_date_col = self.get_optional_column(df, ["Reporting Date"])
+        normalized["reporting_date"] = self.clean_text(df[reporting_date_col]) if reporting_date_col else ""
+
+        normalized = normalized[normalized["search_query"] != ""].copy()
+        return normalized.reset_index(drop=True)
+
+    def build_sqp_opportunities(self, sqp_df, search_terms_df):
+        if sqp_df is None or sqp_df.empty:
+            return pd.DataFrame(), {
+                "uploaded": False,
+                "total_queries": 0,
+                "high_opportunity": 0,
+                "monitor": 0,
+                "low_priority": 0,
+                "harvest_overlap": 0,
+            }
+
+        sqp = sqp_df.copy()
+
+        search_term_set = set()
+        if search_terms_df is not None and not search_terms_df.empty:
+            search_term_set = set(
+                search_terms_df["search_term"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .str.replace(r"\s+", " ", regex=True)
+                .tolist()
+            )
+
+        sqp["search_query_key"] = (
+            sqp["search_query"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .str.replace(r"\s+", " ", regex=True)
+        )
+
+        sqp["in_search_term_report"] = sqp["search_query_key"].isin(search_term_set)
+
+        sqp["opportunity_tier"] = np.select(
+            [
+                (
+                    (sqp["search_query_volume"] >= 1000)
+                    & (sqp["purchase_rate_pct"] >= 6)
+                    & (sqp["purchases_total_count"] >= 25)
+                    & (sqp["purchases_brand_share_pct"] < 20)
+                    & (sqp["search_query_score"] >= 300)
+                ),
+                (
+                    (sqp["search_query_volume"] >= 500)
+                    & (sqp["purchase_rate_pct"] >= 4)
+                    & (sqp["purchases_total_count"] >= 10)
+                    & (sqp["purchases_brand_share_pct"] < 30)
+                ),
+            ],
+            ["High Opportunity", "Monitor"],
+            default="Low Priority",
+        )
+
+        sqp["recommended_action"] = np.select(
+            [
+                (sqp["opportunity_tier"] == "High Opportunity") & (~sqp["in_search_term_report"]),
+                (sqp["opportunity_tier"] == "High Opportunity") & (sqp["in_search_term_report"]),
+                (sqp["opportunity_tier"] == "Monitor") & (~sqp["in_search_term_report"]),
+            ],
+            [
+                "Test as Exact / Phrase",
+                "Prioritize existing query for harvest or campaign expansion",
+                "Monitor and test selectively",
+            ],
+            default="No immediate action",
+        )
+
+        sqp["opportunity_score"] = (
+            (sqp["search_query_score"] * 0.35)
+            + (sqp["search_query_volume"].clip(upper=20000) / 20000 * 100 * 0.25)
+            + (sqp["purchase_rate_pct"].clip(upper=15) / 15 * 100 * 0.25)
+            + ((100 - sqp["purchases_brand_share_pct"].clip(upper=100)) * 0.15)
+        ).round(2)
+
+        opportunities = sqp.copy()
+        opportunities["opportunity_tier"] = pd.Categorical(
+            opportunities["opportunity_tier"],
+            categories=["High Opportunity", "Monitor", "Low Priority"],
+            ordered=True,
+        )
+
+        opportunities = opportunities.sort_values(
+            by=["opportunity_tier", "opportunity_score", "search_query_volume"],
+            ascending=[True, False, False],
+        ).reset_index(drop=True)
+
+        summary = {
+            "uploaded": True,
+            "total_queries": int(len(opportunities)),
+            "high_opportunity": int((opportunities["opportunity_tier"] == "High Opportunity").sum()),
+            "monitor": int((opportunities["opportunity_tier"] == "Monitor").sum()),
+            "low_priority": int((opportunities["opportunity_tier"] == "Low Priority").sum()),
+            "harvest_overlap": int(
+                (
+                    (opportunities["opportunity_tier"] == "High Opportunity")
+                    & (opportunities["in_search_term_report"])
+                ).sum()
+            ),
+        }
+
+        return opportunities, summary
+
+    # -----------------------------
     # SMART WARNINGS + SUGGESTIONS
     # -----------------------------
     def build_smart_warnings(
@@ -297,6 +461,7 @@ class AdsOptimizerEngine:
         campaign_health_df,
         account_health,
         adjusted_min_roas,
+        sqp_summary=None,
     ):
         warnings = []
         suggestions = []
@@ -357,6 +522,26 @@ class AdsOptimizerEngine:
                 "Harvest proven converting search terms into Exact where appropriate."
             )
 
+        if sqp_summary and sqp_summary.get("uploaded"):
+            high_opp = int(sqp_summary.get("high_opportunity", 0))
+            overlap = int(sqp_summary.get("harvest_overlap", 0))
+
+            if high_opp > 0:
+                warnings.append(
+                    f"{high_opp} high-opportunity SQP queries were identified from the prior-month Simple View report."
+                )
+                suggestions.append(
+                    "Use SQP opportunities to guide new keyword expansion and prioritize harvest reviews."
+                )
+
+            if overlap > 0:
+                warnings.append(
+                    f"{overlap} high-opportunity SQP queries also appear in the search term report."
+                )
+                suggestions.append(
+                    "These overlap queries may deserve faster campaign buildout or harvest prioritization."
+                )
+
         if account_health.get("health_status") == "under_target":
             warnings.append(
                 f"Account ROAS is below target at {account_health.get('account_roas')}."
@@ -388,8 +573,8 @@ class AdsOptimizerEngine:
             suggestions.append("The account appears stable. Continue using balanced optimization settings.")
 
         return {
-            "warnings": warnings[:6],
-            "suggestions": suggestions[:6],
+            "warnings": warnings[:8],
+            "suggestions": suggestions[:8],
         }
 
     # -----------------------------
@@ -464,6 +649,7 @@ class AdsOptimizerEngine:
         impression_share = self.normalize_impression_share()
         bulk_targets = self.normalize_bulk_targets()
         bulk_campaigns = self.normalize_bulk_campaigns()
+        sqp = self.normalize_sqp()
 
         targeting_with_share = self.join_impression_share_to_targeting(
             targeting,
@@ -500,12 +686,18 @@ class AdsOptimizerEngine:
             adjusted_min_roas,
         )
 
+        sqp_opportunities, sqp_summary = self.build_sqp_opportunities(
+            sqp_df=sqp,
+            search_terms_df=search_terms,
+        )
+
         smart = self.build_smart_warnings(
             targeting_with_share_df=targeting_with_share,
             search_terms_df=search_terms,
             campaign_health_df=campaign_health_dashboard,
             account_health=account_health,
             adjusted_min_roas=adjusted_min_roas,
+            sqp_summary=sqp_summary,
         )
 
         pre_run_preview = self.build_pre_run_preview(
@@ -529,6 +721,8 @@ class AdsOptimizerEngine:
             "smart_warnings": smart["warnings"],
             "optimization_suggestions": smart["suggestions"],
             "pre_run_preview": pre_run_preview,
+            "sqp_opportunities": sqp_opportunities,
+            "sqp_summary": sqp_summary,
         }
 
     # -----------------------------
@@ -545,6 +739,7 @@ class AdsOptimizerEngine:
             if self.business_report_file is not None
             else None
         )
+        self.sqp_df = self.load_sqp_simple_view() if self.sqp_report_file is not None else None
 
     # -----------------------------
     # METRIC CALCULATIONS
@@ -1482,6 +1677,7 @@ class AdsOptimizerEngine:
         impression_share = self.normalize_impression_share()
         bulk_targets = self.normalize_bulk_targets()
         bulk_campaigns = self.normalize_bulk_campaigns()
+        sqp = self.normalize_sqp()
 
         targeting_with_share = self.join_impression_share_to_targeting(
             targeting,
@@ -1536,12 +1732,18 @@ class AdsOptimizerEngine:
             adjusted_min_roas,
         )
 
+        sqp_opportunities, sqp_summary = self.build_sqp_opportunities(
+            sqp_df=sqp,
+            search_terms_df=search_terms,
+        )
+
         smart = self.build_smart_warnings(
             targeting_with_share_df=targeting_with_share,
             search_terms_df=search_terms,
             campaign_health_df=campaign_health_dashboard,
             account_health=account_health,
             adjusted_min_roas=adjusted_min_roas,
+            sqp_summary=sqp_summary,
         )
 
         pre_run_preview = self.build_pre_run_preview(
@@ -1573,4 +1775,6 @@ class AdsOptimizerEngine:
             "pre_run_preview": pre_run_preview,
             "account_summary": account_summary,
             "run_history": self.load_run_history(),
+            "sqp_opportunities": sqp_opportunities,
+            "sqp_summary": sqp_summary,
         }

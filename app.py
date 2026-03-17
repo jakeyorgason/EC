@@ -17,10 +17,10 @@ st.set_page_config(
     layout="wide",
 )
 
+
 # =========================================================
 # Helpers
 # =========================================================
-
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -171,31 +171,24 @@ def score_action_confidence(row: dict) -> str:
     source_type = str(row.get("source_type", "")).lower()
     action = str(row.get("optimizer_action", "")).upper()
 
-    # Very strong negative signals
     if clicks >= 20 and orders == 0 and spend >= 20:
         return "HIGH"
 
-    # Very strong positive signals
     if orders >= 3 and roas >= 3:
         return "HIGH"
 
-    # Harvest / negative actions tend to be riskier when data is thin
     if source_type in {"search_harvest", "negative_keyword"} and clicks < 12:
         return "LOW"
 
-    # Budget actions with thin volume are low confidence
     if source_type == "budget" and clicks < 25:
         return "LOW"
 
-    # Bid actions with weak signal are low confidence
     if source_type == "bid" and clicks < 8:
         return "LOW"
 
-    # Mid-zone ROAS is ambiguous
     if 2.5 <= roas <= 4:
         return "LOW"
 
-    # Default medium for everything else
     if action in {"INCREASE_BID", "DECREASE_BID", "INCREASE_BUDGET", "DECREASE_BUDGET"}:
         return "MEDIUM"
 
@@ -276,7 +269,6 @@ def build_narrative(
 # =========================================================
 # AI Override Layer
 # =========================================================
-
 @st.cache_data(show_spinner=False, ttl=900)
 def run_ai_review_cached(payload_json: str, model: str) -> dict:
     client = get_openai_client()
@@ -305,6 +297,7 @@ Rules:
 - If decision is KEEP, set new_action to an empty string.
 - If decision is REMOVE, set new_action to an empty string.
 - If decision is MODIFY, you must supply new_action.
+- Use SQP opportunities only as strategy context, not as direct execution instructions.
 
 Return structured JSON only.
 """
@@ -419,7 +412,6 @@ def build_ai_action_candidates(
         optimizer_action = str(row.get("Optimizer Action", "")).upper()
         entity = str(row.get("Entity", ""))
 
-        # Bid rows
         if entity == "Keyword" and optimizer_action in {"INCREASE_BID", "DECREASE_BID"} and not bid.empty:
             match = bid[
                 (bid["_campaign_key"] == campaign_key)
@@ -445,7 +437,6 @@ def build_ai_action_candidates(
                     }
                 )
 
-        # Harvest / negative rows
         elif optimizer_action in {"HARVEST_TO_EXACT", "ADD_NEGATIVE_PHRASE"} and not search.empty:
             match = search[
                 (search["_campaign_key"] == campaign_key)
@@ -469,7 +460,6 @@ def build_ai_action_candidates(
                     }
                 )
 
-        # Budget rows
         elif entity == "Campaign" and optimizer_action in {"INCREASE_BUDGET", "DECREASE_BUDGET"} and not budget.empty:
             match = budget[
                 (budget["_campaign_key"] == campaign_key)
@@ -503,6 +493,8 @@ def build_ai_override_payload(
     account_summary: dict,
     account_health: dict,
     simulation_summary: dict,
+    sqp_opportunities: pd.DataFrame,
+    sqp_summary: dict,
 ) -> dict:
     keep_cols = [
         "id",
@@ -526,10 +518,29 @@ def build_ai_override_payload(
     ]
     cols = [c for c in keep_cols if c in low_conf_df.columns]
 
+    sqp_context = []
+    if sqp_opportunities is not None and not sqp_opportunities.empty:
+        keep_sqp_cols = [
+            c for c in [
+                "search_query",
+                "search_query_score",
+                "search_query_volume",
+                "purchase_rate_pct",
+                "purchases_total_count",
+                "purchases_brand_share_pct",
+                "opportunity_tier",
+                "recommended_action",
+                "in_search_term_report",
+            ] if c in sqp_opportunities.columns
+        ]
+        sqp_context = sqp_opportunities.head(10)[keep_sqp_cols].to_dict(orient="records")
+
     return {
         "account_summary": account_summary,
         "account_health": account_health,
         "simulation_summary": simulation_summary,
+        "sqp_summary": sqp_summary or {},
+        "sqp_top_opportunities": sqp_context,
         "low_confidence_actions": low_conf_df[cols].to_dict(orient="records"),
     }
 
@@ -845,6 +856,7 @@ with st.sidebar:
 - Adds negative phrases for wasted traffic
 - Adjusts campaign daily budgets
 - Optionally enforces TACOS and monthly pacing guardrails
+- Optionally uses prior-month SQP Simple View for keyword opportunity context
 """
     )
 
@@ -859,8 +871,13 @@ with st.sidebar:
 """
     )
 
-    st.markdown("## Optional upload")
-    st.markdown("- Seller Central Business Report for TACOS control")
+    st.markdown("## Optional uploads")
+    st.markdown(
+        """
+- Seller Central Business Report for TACOS control  
+- Search Query Performance Report (**Simple View**, **prior month only**)
+"""
+    )
 
     st.markdown("---")
     st.markdown("## Recommended Workflow")
@@ -869,6 +886,7 @@ with st.sidebar:
 - Start with **Balanced**
 - Use **Losing KW Action = Both**
 - Use monthly pacing only for budget-sensitive clients
+- Upload prior-month SQP only in **Simple View**
 - Review diagnostics before running
 - Review output tables before download
 """
@@ -878,8 +896,9 @@ with st.sidebar:
     st.markdown("## AI Optimization Layer")
 
     enable_ai_review = st.checkbox("Enable AI Optimization Layer", value=True)
+
     if enable_ai_review:
-        st.caption("AI automatically reviews low-confidence actions after optimization and refines the final output.")
+        st.caption("AI automatically reviews low-confidence actions and improves the final output.")
         st.caption(f"AI Model: {get_openai_model()}")
 
     api_key_present = bool(get_openai_api_key())
@@ -887,7 +906,7 @@ with st.sidebar:
         st.warning("OPENAI_API_KEY not found. Add it to environment variables or Streamlit secrets.")
 
     st.markdown("---")
-    st.markdown("**Version:** 1.2")
+    st.markdown("**Version:** 1.3")
     st.markdown("**Owner:** Jake Yorgason, Evolved Commerce")
 
 
@@ -908,7 +927,7 @@ with header_right:
         <div class="brand-shell">
             <div class="brand-title">Evolved Commerce<br>Amazon Ads Command Center</div>
             <div class="brand-subtitle">
-                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • AI optimization
+                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • SQP context • AI optimization
             </div>
         </div>
         """,
@@ -1108,7 +1127,7 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-title">Upload Amazon Reports</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Upload the report set to unlock diagnostics and optimization preview.</div>',
+    '<div class="section-note">Upload the report set to unlock diagnostics, SQP context, and optimization preview.</div>',
     unsafe_allow_html=True,
 )
 
@@ -1135,11 +1154,20 @@ with up2:
     if business_file is not None:
         st.success("Seller Central Business Report uploaded")
 
+    sqp_file = st.file_uploader(
+        "Search Query Performance Report (optional — prior month, Simple View only)",
+        type=["csv"],
+        help="Use the prior month's SQP report in Simple View only.",
+    )
+    if sqp_file is not None:
+        st.success("Search Query Performance Report uploaded")
+
 bulk_bytes = get_uploaded_bytes(bulk_file)
 search_bytes = get_uploaded_bytes(search_file)
 targeting_bytes = get_uploaded_bytes(targeting_file)
 impression_bytes = get_uploaded_bytes(impression_file)
 business_bytes = get_uploaded_bytes(business_file)
+sqp_bytes = get_uploaded_bytes(sqp_file)
 
 required_ready = all([bulk_bytes, search_bytes, targeting_bytes, impression_bytes])
 tacos_ready = (not enable_tacos_control) or (business_bytes is not None)
@@ -1152,6 +1180,7 @@ def build_engine() -> AdsOptimizerEngine:
         targeting_file=bytes_to_buffer(targeting_bytes),
         impression_share_file=bytes_to_buffer(impression_bytes),
         business_report_file=bytes_to_buffer(business_bytes),
+        sqp_report_file=bytes_to_buffer(sqp_bytes),
         min_roas=min_roas,
         min_clicks=min_clicks,
         zero_order_click_threshold=losing_kw_click_threshold,
@@ -1182,6 +1211,8 @@ preview = {}
 smart_warnings = []
 optimization_suggestions = []
 campaign_health_dashboard = pd.DataFrame()
+sqp_opportunities = pd.DataFrame()
+sqp_summary = {}
 
 if required_ready and tacos_ready:
     try:
@@ -1195,6 +1226,8 @@ if required_ready and tacos_ready:
         smart_warnings = safe_list(diagnostics.get("smart_warnings"))
         optimization_suggestions = safe_list(diagnostics.get("optimization_suggestions"))
         campaign_health_dashboard = safe_df(diagnostics.get("campaign_health_dashboard"))
+        sqp_opportunities = safe_df(diagnostics.get("sqp_opportunities"))
+        sqp_summary = safe_dict(diagnostics.get("sqp_summary"))
 
     except Exception as e:
         st.error(f"Diagnostics failed: {e}")
@@ -1223,22 +1256,36 @@ if diagnostics is not None:
 
     with dh1:
         render_metric_card("Ad Spend", f"${get_number(account_summary.get('total_spend')):,.2f}", tone="brand")
-
     with dh2:
         render_metric_card("Ad Sales", f"${get_number(account_summary.get('total_sales')):,.2f}", tone="brand")
-
     with dh3:
         roas_tone = "good" if account_roas >= adjusted_min_roas else "bad"
         render_metric_card("Account ROAS", f"{account_roas:.2f}", tone=roas_tone)
-
     with dh4:
         render_metric_card("TACOS", str(tacos_display), tone="warn", small=True)
-
     with dh5:
         render_metric_card("Under Target", str(get_int(account_summary.get("campaigns_under_target"))), tone="bad")
-
     with dh6:
         render_metric_card("Scalable", str(get_int(account_summary.get("campaigns_scalable"))), tone="good")
+
+    if sqp_summary.get("uploaded"):
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">SQP Opportunity Snapshot</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-note">Optional prior-month SQP Simple View insights used for keyword opportunity context.</div>',
+            unsafe_allow_html=True,
+        )
+
+        sq1, sq2, sq3, sq4 = st.columns(4)
+
+        with sq1:
+            render_metric_card("High Opportunity", str(get_int(sqp_summary.get("high_opportunity"))), tone="good")
+        with sq2:
+            render_metric_card("Monitor", str(get_int(sqp_summary.get("monitor"))), tone="warn")
+        with sq3:
+            render_metric_card("Total SQP Queries", str(get_int(sqp_summary.get("total_queries"))), tone="brand")
+        with sq4:
+            render_metric_card("Harvest Overlap", str(get_int(sqp_summary.get("harvest_overlap"))), tone="good")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1295,9 +1342,29 @@ if diagnostics is not None:
         else:
             st.info("No campaign health table available.")
 
+    if sqp_summary.get("uploaded"):
+        with st.expander("Top SQP Opportunities", expanded=False):
+            show_cols = [
+                c for c in [
+                    "search_query",
+                    "search_query_score",
+                    "search_query_volume",
+                    "purchase_rate_pct",
+                    "purchases_total_count",
+                    "purchases_brand_share_pct",
+                    "opportunity_tier",
+                    "recommended_action",
+                    "in_search_term_report",
+                ] if c in sqp_opportunities.columns
+            ]
+            if not sqp_opportunities.empty and show_cols:
+                st.dataframe(sqp_opportunities[show_cols].head(25), use_container_width=True)
+            else:
+                st.info("No SQP opportunities available.")
+
     if enable_ai_review and api_key_present:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.info("AI optimization is enabled. After you run the optimizer, AI will automatically review low-confidence actions and refine the final bulk output.")
+        st.info("AI optimization is enabled. After you run the optimizer, AI will automatically review low-confidence actions and use SQP context if available.")
 
 
 # =========================================================
@@ -1334,6 +1401,7 @@ st.markdown(
 st.markdown("- If a target materially exceeds your ROAS goal, the app may **increase the bid**.")
 st.markdown("- Search term harvesting creates **Exact keywords** at the ad group level.")
 st.markdown("- Budget updates apply at the campaign daily budget level, not the account level.")
+st.markdown("- Prior-month SQP Simple View, when uploaded, is used only for keyword opportunity context and AI guidance, not direct execution logic.")
 
 if enable_tacos_control:
     st.markdown(
@@ -1389,6 +1457,8 @@ if "last_outputs" in st.session_state:
     output_smart_warnings = safe_list(outputs.get("smart_warnings"))
     output_optimization_suggestions = safe_list(outputs.get("optimization_suggestions"))
     output_account_summary = safe_dict(outputs.get("account_summary"))
+    output_sqp_opportunities = safe_df(outputs.get("sqp_opportunities"))
+    output_sqp_summary = safe_dict(outputs.get("sqp_summary"))
 
     ai_candidates_df = pd.DataFrame()
     ai_override_log_df = pd.DataFrame()
@@ -1414,6 +1484,8 @@ if "last_outputs" in st.session_state:
                     account_summary=output_account_summary,
                     account_health=output_account_health,
                     simulation_summary=simulation_summary,
+                    sqp_opportunities=output_sqp_opportunities,
+                    sqp_summary=output_sqp_summary,
                 )
 
                 ai_response = run_ai_review_cached(
@@ -1455,21 +1527,35 @@ if "last_outputs" in st.session_state:
 
     with summary1:
         render_metric_card("Bid Increases", str(get_int(simulation_summary.get("bid_increases"))), tone="good")
-
     with summary2:
         render_metric_card("Bid Decreases", str(get_int(simulation_summary.get("bid_decreases"))), tone="warn")
-
     with summary3:
         render_metric_card("Negatives", str(get_int(simulation_summary.get("negatives_added"))), tone="warn")
-
     with summary4:
         render_metric_card("Harvests", str(get_int(simulation_summary.get("harvested_keywords"))), tone="good")
-
     with summary5:
         render_metric_card("Budget Increases", str(get_int(simulation_summary.get("budget_increases"))), tone="good")
-
     with summary6:
         render_metric_card("Budget Decreases", str(get_int(simulation_summary.get("budget_decreases"))), tone="warn")
+
+    if output_sqp_summary.get("uploaded"):
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">SQP Opportunity Reporting</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-note">Prior-month Simple View SQP insights available for keyword opportunity planning.</div>',
+            unsafe_allow_html=True,
+        )
+
+        sq1, sq2, sq3, sq4 = st.columns(4)
+
+        with sq1:
+            render_metric_card("High Opportunity", str(get_int(output_sqp_summary.get("high_opportunity"))), tone="good")
+        with sq2:
+            render_metric_card("Monitor", str(get_int(output_sqp_summary.get("monitor"))), tone="warn")
+        with sq3:
+            render_metric_card("Total SQP Queries", str(get_int(output_sqp_summary.get("total_queries"))), tone="brand")
+        with sq4:
+            render_metric_card("Harvest Overlap", str(get_int(output_sqp_summary.get("harvest_overlap"))), tone="good")
 
     if enable_ai_review and ai_impact_summary:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -1535,9 +1621,10 @@ if "last_outputs" in st.session_state:
         "Bid Recommendations",
         "Search Term Actions",
         "Budget Actions",
+        "SQP Opportunities",
         "AI Override Log",
     ]
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(tab_names)
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(tab_names)
 
     with tab1:
         if not combined_bulk_updates.empty:
@@ -1564,6 +1651,25 @@ if "last_outputs" in st.session_state:
             st.info("No campaign budget actions available.")
 
     with tab5:
+        if not output_sqp_opportunities.empty:
+            show_cols = [
+                c for c in [
+                    "search_query",
+                    "search_query_score",
+                    "search_query_volume",
+                    "purchase_rate_pct",
+                    "purchases_total_count",
+                    "purchases_brand_share_pct",
+                    "opportunity_tier",
+                    "recommended_action",
+                    "in_search_term_report",
+                ] if c in output_sqp_opportunities.columns
+            ]
+            st.dataframe(output_sqp_opportunities[show_cols], use_container_width=True)
+        else:
+            st.info("No SQP opportunities available.")
+
+    with tab6:
         if not ai_override_log_df.empty:
             st.dataframe(ai_override_log_df, use_container_width=True)
         else:
@@ -1617,6 +1723,16 @@ if "last_outputs" in st.session_state:
             file_name="campaign_budget_actions.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_campaign_budget_actions_xlsx",
+            use_container_width=True,
+        )
+
+    if not output_sqp_opportunities.empty:
+        st.download_button(
+            label="Download SQP Opportunities",
+            data=to_excel_bytes(output_sqp_opportunities),
+            file_name="sqp_opportunities.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_sqp_opportunities_xlsx",
             use_container_width=True,
         )
 
