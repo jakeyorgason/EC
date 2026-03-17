@@ -938,6 +938,8 @@ with header_right:
 # =========================================================
 # Settings
 # =========================================================
+st.markdown("<!-- redeploy -->", unsafe_allow_html=True)
+
 st.markdown('<div class="section-title">Optimization Settings</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="section-note">Core controls for bidding, efficiency, and zero-order action logic.</div>',
