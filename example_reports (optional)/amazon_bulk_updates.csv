@@ -1,0 +1,37 @@
+Product,Entity,Operation,Campaign ID,Ad Group ID,Keyword ID,Campaign Name,Ad Group Name,Keyword Text,Match Type,Bid,Optimizer Action
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,424577964313349.0,Amazon Rec | Heritage | SP | EC,KW,watch band,PHRASE,0.4,DECREASE_BID_15
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,446257404505093.0,Amazon Rec | Heritage | SP | EC,KW,nato strap,PHRASE,0.54,INCREASE_BID_15
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,417063296349532.0,Amazon Rec | Heritage | SP | EC,KW,watch strap,PHRASE,0.45,INCREASE_BID_15
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,470101056313901.0,Amazon Rec | Heritage | SP | EC,KW,tropic strap,PHRASE,0.31,DECREASE_BID_20
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,438297509664567.0,Amazon Rec | Heritage | SP | EC,KW,20mm watch,PHRASE,0.51,INCREASE_BID_15
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,397034545528611.0,Amazon Rec | Heritage | SP | EC,KW,rubber watch,PHRASE,0.31,DECREASE_BID_20
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,308287101228582.0,Amazon Rec | Heritage | SP | EC,KW,anchor strap,PHRASE,0.31,DECREASE_BID_20
+Sponsored Products,Keyword,Update,180662145633001,499779689242692.0,512897061809771.0,Amazon Rec | Heritage | SP | EC,KW,fkm strap,PHRASE,0.31,DECREASE_BID_20
+Sponsored Products,Keyword,Update,4294271053101,506941551701515.0,292527989499551.0,Amazon Rec | Seahunter | SP | EC,KW,watch band,PHRASE,0.31,DECREASE_BID_20
+Sponsored Products,Keyword,Update,4294271053101,506941551701515.0,394785790412218.0,Amazon Rec | Seahunter | SP | EC,KW,watch strap,PHRASE,0.45,INCREASE_BID_15
+Sponsored Products,Keyword,Update,4294271053101,506941551701515.0,345211090385678.0,Amazon Rec | Seahunter | SP | EC,KW,rubber watch,PHRASE,0.31,DECREASE_BID_20
+Sponsored Products,Keyword,Update,241829466893042,514355667936520.0,485125614489482.0,Dest | Heritage | SP | EC,KW,rubber strap,PHRASE,0.82,DECREASE_BID_15
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,337899508765762.0,Amazon Rec | Sailcloth | SP | EC,KWs,sailcloth strap,PHRASE,0.4,DECREASE_BID_20
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,337899508765762.0,Amazon Rec | Sailcloth | SP | EC,KWs,sailcloth strap,PHRASE,0.4,DECREASE_BID_20
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,317665852334946.0,Amazon Rec | Sailcloth | SP | EC,KWs,rubber strap,PHRASE,0.7,INCREASE_BID_15
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,484736553083676.0,Amazon Rec | Sailcloth | SP | EC,KWs,anchor strap,PHRASE,0.4,DECREASE_BID_20
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,521274224522629.0,Amazon Rec | Sailcloth | SP | EC,KWs,rubber watch,PHRASE,0.64,INCREASE_BID_15
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,528250713833601.0,Amazon Rec | Sailcloth | SP | EC,KWs,green watch strap,PHRASE,0.7,INCREASE_BID_15
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,420264029107697.0,Amazon Rec | Sailcloth | SP | EC,KWs,22mm watch,PHRASE,0.4,DECREASE_BID_20
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,450875221622640.0,Amazon Rec | Sailcloth | SP | EC,KWs,20mm watch,PHRASE,0.64,INCREASE_BID_15
+Sponsored Products,Keyword,Update,9963131831396,509191388784477.0,384418133750228.0,Amazon Rec | Sailcloth | SP | EC,KWs,sailcloth,PHRASE,0.57,INCREASE_BID_15
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,539751246794300.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,watch band,PHRASE,0.31,DECREASE_BID_15
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,545771905926385.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nato strap,PHRASE,0.56,INCREASE_BID_15
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,389248827690839.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,anchor strap,PHRASE,0.56,INCREASE_BID_15
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,548222281540171.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nylon strap,PHRASE,0.3,DECREASE_BID_20
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,534207303342947.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nato band,PHRASE,0.3,DECREASE_BID_20
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,329265035147733.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nylon watch,PHRASE,0.3,DECREASE_BID_20
+Sponsored Products,Keyword,Update,16078886693037,332429559044551.0,450095355268243.0,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nato watch,PHRASE,0.3,DECREASE_BID_20
+Sponsored Products,Keyword,Update,236504479749387,526863322737033.0,379332876960523.0,Domination | Brand Defense | SP | EC,Brand,anchor strap,EXACT,1.36,DECREASE_BID_20
+Sponsored Products,Keyword,Update,191783403544892,395248976031558.0,323250638586841.0,Domination | Core Keywords | SP | EC,22mm Core,22mm watch band,EXACT,1.27,DECREASE_BID_15
+Sponsored Products,Keyword,Update,191783403544892,395248976031558.0,558586278942152.0,Domination | Core Keywords | SP | EC,22mm Core,22mm watch strap,EXACT,1.67,INCREASE_BID_15
+Sponsored Products,Keyword,Update,191783403544892,395248976031558.0,549427539103732.0,Domination | Core Keywords | SP | EC,22mm Core,22mm nato strap,EXACT,1.19,DECREASE_BID_15
+Sponsored Products,Keyword,Update,81736866079420,292512721887586.0,541079175293468.0,Domination | Long Tail | SP | EC,Long Tail,blue nylon watch strap,PHRASE,0.96,DECREASE_BID_20
+Sponsored Products,Keyword,Update,81736866079420,292512721887586.0,383364898041180.0,Domination | Long Tail | SP | EC,Long Tail,sailcloth watch strap,PHRASE,1.1,DECREASE_BID_15
+Sponsored Products,Keyword,Update,4294271053101,506941551701515.0,299564182196122.0,Amazon Rec | Seahunter | SP | EC,KW,watch bands for men,EXACT,0.81,DECREASE_BID_20
+Sponsored Products,Keyword,Update,191783403544892,390198490798458.0,539139221416435.0,Domination | Core Keywords | SP | EC,20mm Core,20mm watch band,EXACT,1.2,DECREASE_BID_20

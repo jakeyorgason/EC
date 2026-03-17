@@ -1,0 +1,75 @@
+Product,Entity,Operation,Campaign Name,Ad Group Name,Keyword Text,Match Type,Bid
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,19mm nato strap,PHRASE,0.39
+Sponsored Products,Keyword,Update,Auto | Heritage | SP | EC,Auto,20 mm blue watch band,-,0.69
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,20mm nato watch strap,-,0.63
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,20mm nylon nato,-,1.29
+Sponsored Products,Keyword,Update,Amazon Rec | Heritage | SP | EC,KW,20mm sailcloth watch strap,PHRASE,0.8
+Sponsored Products,Keyword,Update,Amazon Rec | Seahunter | SP | EC,KW,20mm sailcloth watch strap,PHRASE,0.67
+Sponsored Products,Negative Keyword,Create,Domination | Long Tail | SP | EC,Long Tail,20mm sailcloth watch strap,Negative Phrase,
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,20mm tudor black bay strap,PHRASE,0.52
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,20mm watch band,-,0.82
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,20mm watch band,PHRASE,1.2
+Sponsored Products,Negative Keyword,Create,Domination | Core Keywords | SP | EC,20mm Core,20mm watch band,Negative Phrase,
+Sponsored Products,Keyword,Update,Amazon Rec | Heritage | SP | EC,KW,20mm watch strap,PHRASE,0.78
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,22mm bond nato,-,0.39
+Sponsored Products,Keyword,Update,Amazon Rec | Seahunter | SP | EC,ASIN,22mm diver watch band,-,1.0
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,22mm nato,-,1.25
+Sponsored Products,Keyword,Update,Domination | Core Keywords | SP | EC,22mm Core,22mm nato strap,EXACT,1.65
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,22mm watch band,-,0.8
+Sponsored Products,Keyword,Update,Domination | Core Keywords | SP | EC,22mm Core,22mm watch band,EXACT,1.72
+Sponsored Products,Keyword,Update,Domination | Core Keywords | SP | EC,22mm Core,22mm watch strap,EXACT,2.22
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,anchor sailcloth strap,PHRASE,0.44
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,anchor strap 20mm,PHRASE,0.69
+Sponsored Products,Negative Keyword,Create,Amazon Rec | Heritage | SP | EC,KW,anchor strap co,Negative Phrase,
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,anchor strap co,PHRASE,0.51
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,anchor strap co watch,PHRASE,0.21
+Sponsored Products,Negative Keyword,Create,Amazon Rec | Sailcloth | SP | EC,KWs,anchor strap co watch,Negative Phrase,
+Sponsored Products,Negative Keyword,Create,Domination | Brand Defense | SP | EC,Brand,anchor straps,Negative Phrase,
+Sponsored Products,Keyword,Update,Domination | Brand Defense | SP | EC,Brand,anchor watch strap,EXACT,0.93
+Sponsored Products,Keyword,Update,Auto | Heritage | SP | EC,Auto,anchorflex,-,0.52
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,b01gh0clu8,-,1.71
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,ASIN,b07233cwb1,-,1.05
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,b07v9zlnzf,-,0.84
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,b087zmx73s,-,1.29
+Sponsored Products,Keyword,Update,Auto | Heritage | SP | EC,Auto,b087zn4hgw,-,0.52
+Sponsored Products,Keyword,Update,Auto | Heritage | SP | EC,Auto,b0d6bnlcbd,-,0.69
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,b0dpm4mm6b,-,0.45
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,b0dqllyryp,-,0.52
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,b0dwfdbftr,-,0.53
+Sponsored Products,Keyword,Update,Auto | Heritage | SP | EC,Auto,b0fhwckxkh,-,0.34
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,b0fwc6r6t6,-,0.39
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,b0ghqhdz4x,-,0.72
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | ASIN,barton watch bands,-,0.86
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,black nylon watch strap,-,1.29
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,black sail cloth strap 20mm,PHRASE,0.52
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,blue nato strap 20mm,-,0.39
+Sponsored Products,Keyword,Update,Domination | Long Tail | SP | EC,Long Tail,blue sailcloth watch strap 20mm,PHRASE,1.23
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,cordura watch band,PHRASE,1.29
+Sponsored Products,Keyword,Update,Amazon Rec | Heritage | SP | EC,KW,fkm rubber diver watch strap,PHRASE,0.4
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,green nato strap,-,0.9
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,green watch strap 22m,PHRASE,0.52
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,nato band with brushed silver,-,0.69
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,nato strap 20mm,-,1.07
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,nato strap 20mm,-,1.19
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nato straps for citizen watches,PHRASE,0.52
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | ASIN,nato watch strap,-,1.02
+Sponsored Products,Negative Keyword,Create,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,nato watch strap,Negative Phrase,
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,navy sailcloth strap,-,0.52
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,ASIN,northstar watch straps,-,2.09
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,omega watch strap seamaster 20mm,PHRASE,0.78
+Sponsored Products,Keyword,Update,Amazon Rec | Heritage | SP | EC,ASIN,orient 22mm rubber,-,1.1
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,ribbed nato strap nttd,PHRASE,1.0
+Sponsored Products,Keyword,Update,Amazon Rec | Seahunter | SP | EC,KW,rubber watch strap,PHRASE,0.51
+Sponsored Products,Keyword,Update,Amazon Rec | Heritage | SP | EC,KW,sail cloth watch straps,PHRASE,0.56
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,sail cloth watch straps,-,0.96
+Sponsored Products,Negative Keyword,Create,Auto | Sailcloth | SP | EC,Auto,sailcloth watch strap,Negative Phrase,
+Sponsored Products,Negative Keyword,Create,Amazon Rec | Sailcloth | SP | EC,KWs,sailcloth watch strap,Negative Phrase,
+Sponsored Products,Negative Keyword,Create,Amazon Rec | Sailcloth | SP | EC,KWs,sailcloth watch strap,Negative Phrase,
+Sponsored Products,Keyword,Update,Amazon Rec | Sailcloth | SP | EC,KWs,sailcloth watch strap 20mm,PHRASE,0.89
+Sponsored Products,Keyword,Update,Auto | Sailcloth | SP | EC,Auto,sailcloth watch strap 22mm,-,0.77
+Sponsored Products,Negative Keyword,Create,Domination | Long Tail | SP | EC,Long Tail,sailcloth watch strap 22mm,Negative Phrase,
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | ASIN,stretchy nato strap,-,1.43
+Sponsored Products,Keyword,Update,Auto | Standard Nylon | SP | EC,Auto,thick nato strap 20mm,-,1.29
+Sponsored Products,Keyword,Update,Amazon Rec | Standard Nylon | SP | EC,Amazon Rec | KW,timex nato strap,PHRASE,1.23
+Sponsored Products,Keyword,Update,Dest | Heritage | SP | EC,KW,vulcanized rubber strap 20mm,PHRASE,1.75
+Sponsored Products,Negative Keyword,Create,Amazon Rec | Sailcloth | SP | EC,KWs,watch strap,Negative Phrase,
