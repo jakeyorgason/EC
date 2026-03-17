@@ -1136,7 +1136,7 @@ st.markdown(
 up1, up2 = st.columns(2)
 
 with up1:
-    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"])
+    bulk_file = st.file_uploader("Bulk Sheet (Sales and Traffic)", type=["xlsx"])
     upload_status_line(bulk_file, "Bulk Sheet uploaded")
 
     search_file = st.file_uploader("Search Term Report", type=["xlsx"])
