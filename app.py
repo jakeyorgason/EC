@@ -1150,7 +1150,7 @@ with up2:
     upload_status_line(impression_file, "Impression Share Report uploaded")
 
     business_file = st.file_uploader(
-        "Seller Central Business Report (Sales and Traffic)",
+        "Sales and Traffic Business Report (only required if TACOS Control is enabled)",
         type=["xlsx", "csv"],
     )
     if business_file is not None:
