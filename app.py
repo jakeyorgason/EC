@@ -425,7 +425,7 @@ with r1c1:
 
 with r1c2:
     min_clicks = st.number_input(
-        "Minimum Clicks Before Standard Efficiency Actions",
+        "Minimum Clicks Before Efficiency Actions",
         min_value=1,
         max_value=100,
         value=8,
