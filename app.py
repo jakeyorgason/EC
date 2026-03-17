@@ -302,8 +302,8 @@ Rules:
 - For budget actions, new_action may only be: INCREASE_BUDGET, DECREASE_BUDGET, or NO_ACTION.
 - For harvest actions, new_action may only be: HARVEST_TO_EXACT or NO_ACTION.
 - For negative keyword actions, new_action may only be: ADD_NEGATIVE_PHRASE or NO_ACTION.
-- If decision is KEEP, do not use new_action.
-- If decision is REMOVE, do not use new_action.
+- If decision is KEEP, set new_action to an empty string.
+- If decision is REMOVE, set new_action to an empty string.
 - If decision is MODIFY, you must supply new_action.
 
 Return structured JSON only.
@@ -337,7 +337,7 @@ Return structured JSON only.
                                     "new_action": {"type": "string"},
                                     "reason": {"type": "string"}
                                 },
-                                "required": ["id", "decision", "reason"]
+                                "required": ["id", "decision", "new_action", "reason"]
                             }
                         }
                     },
