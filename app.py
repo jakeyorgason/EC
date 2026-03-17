@@ -1136,7 +1136,7 @@ st.markdown(
 up1, up2 = st.columns(2)
 
 with up1:
-    bulk_file = st.file_uploader("Bulk Sheet (Sales and Traffic)", type=["xlsx"])
+    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"])
     upload_status_line(bulk_file, "Bulk Sheet uploaded")
 
     search_file = st.file_uploader("Search Term Report", type=["xlsx"])
@@ -1150,7 +1150,7 @@ with up2:
     upload_status_line(impression_file, "Impression Share Report uploaded")
 
     business_file = st.file_uploader(
-        "Seller Central Business Report (optional unless TACOS control is enabled)",
+        "Seller Central Business Report (Sales and Traffic; required for TACOS calculation)",
         type=["xlsx", "csv"],
     )
     if business_file is not None:
