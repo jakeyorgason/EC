@@ -17,10 +17,10 @@ st.set_page_config(
     layout="wide",
 )
 
-
 # =========================================================
 # Helpers
 # =========================================================
+
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -120,6 +120,88 @@ def get_openai_client() -> Optional[OpenAI]:
     return OpenAI(api_key=api_key)
 
 
+def get_openai_model() -> str:
+    try:
+        if "OPENAI_MODEL" in st.secrets and st.secrets["OPENAI_MODEL"]:
+            return st.secrets["OPENAI_MODEL"]
+    except Exception:
+        pass
+    return os.getenv("OPENAI_MODEL", "gpt-4o")
+
+
+def normalize_match_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def normalize_term_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def get_strategy_parameters(strategy_mode: str) -> dict:
+    mode = str(strategy_mode).strip().lower()
+
+    if mode == "conservative":
+        return {
+            "max_bid_up": 0.05,
+            "max_bid_down": 0.10,
+            "budget_up_pct": 0.05,
+            "budget_down_pct": 0.08,
+        }
+    if mode == "aggressive":
+        return {
+            "max_bid_up": 0.20,
+            "max_bid_down": 0.25,
+            "budget_up_pct": 0.15,
+            "budget_down_pct": 0.12,
+        }
+
+    return {
+        "max_bid_up": 0.10,
+        "max_bid_down": 0.15,
+        "budget_up_pct": 0.10,
+        "budget_down_pct": 0.10,
+    }
+
+
+def score_action_confidence(row: dict) -> str:
+    clicks = float(row.get("clicks", 0) or 0)
+    orders = float(row.get("orders", 0) or 0)
+    roas = float(row.get("roas", 0) or 0)
+    spend = float(row.get("spend", 0) or 0)
+    source_type = str(row.get("source_type", "")).lower()
+    action = str(row.get("optimizer_action", "")).upper()
+
+    # Very strong negative signals
+    if clicks >= 20 and orders == 0 and spend >= 20:
+        return "HIGH"
+
+    # Very strong positive signals
+    if orders >= 3 and roas >= 3:
+        return "HIGH"
+
+    # Harvest / negative actions tend to be riskier when data is thin
+    if source_type in {"search_harvest", "negative_keyword"} and clicks < 12:
+        return "LOW"
+
+    # Budget actions with thin volume are low confidence
+    if source_type == "budget" and clicks < 25:
+        return "LOW"
+
+    # Bid actions with weak signal are low confidence
+    if source_type == "bid" and clicks < 8:
+        return "LOW"
+
+    # Mid-zone ROAS is ambiguous
+    if 2.5 <= roas <= 4:
+        return "LOW"
+
+    # Default medium for everything else
+    if action in {"INCREASE_BID", "DECREASE_BID", "INCREASE_BUDGET", "DECREASE_BUDGET"}:
+        return "MEDIUM"
+
+    return "LOW"
+
+
 def build_narrative(
     account_health: dict,
     simulation_summary: dict,
@@ -191,49 +273,9 @@ def build_narrative(
     return notes
 
 
-def build_ai_decision_payload(
-    account_health: dict,
-    account_summary: dict,
-    preview: dict,
-    campaign_health_dashboard: pd.DataFrame,
-    smart_warnings: list,
-    optimization_suggestions: list,
-) -> dict:
-    top_campaigns = pd.DataFrame()
-
-    if campaign_health_dashboard is not None and not campaign_health_dashboard.empty:
-        cols_to_keep = [
-            c
-            for c in [
-                "campaign_name",
-                "campaign_status",
-                "spend",
-                "sales",
-                "orders",
-                "clicks",
-                "roas",
-                "acos",
-                "avg_impression_share_pct",
-            ]
-            if c in campaign_health_dashboard.columns
-        ]
-
-        top_campaigns = (
-            campaign_health_dashboard[cols_to_keep]
-            .sort_values(by=["spend", "sales"], ascending=[False, False])
-            .head(12)
-            .copy()
-        )
-
-    return {
-        "account_health": account_health,
-        "account_summary": account_summary,
-        "pre_run_preview": preview,
-        "smart_warnings": smart_warnings[:6],
-        "optimization_suggestions": optimization_suggestions[:6],
-        "top_campaigns": top_campaigns.to_dict(orient="records"),
-    }
-
+# =========================================================
+# AI Override Layer
+# =========================================================
 
 @st.cache_data(show_spinner=False, ttl=900)
 def run_ai_review_cached(payload_json: str, model: str) -> dict:
@@ -242,113 +284,398 @@ def run_ai_review_cached(payload_json: str, model: str) -> dict:
         raise ValueError("OPENAI_API_KEY not found.")
 
     instructions = """
-You are an expert Amazon Sponsored Products optimization reviewer.
+You are an expert Amazon Sponsored Products optimizer.
 
-Your job:
-- Review the rule-based optimizer output.
-- Do NOT invent data.
-- Do NOT override obvious guardrails recklessly.
-- Focus on prioritization, risk, scale opportunities, and missed context.
+You are reviewing ONLY low-confidence optimization actions. Do not review high-confidence actions.
 
-Return valid JSON only with this exact shape:
-{
-  "executive_summary": "string",
-  "priority_actions": [
-    {"action": "string", "reason": "string", "priority": "High|Medium|Low"}
-  ],
-  "risk_flags": [
-    {"flag": "string", "reason": "string", "severity": "High|Medium|Low"}
-  ],
-  "scaling_opportunities": [
-    {"campaign_name": "string", "reason": "string"}
-  ],
-  "ai_verdict": "Approve|Approve with Caution|Needs Review"
-}
+Your goal:
+- KEEP actions that still look directionally correct.
+- MODIFY actions only when there is a clear safer alternative.
+- REMOVE actions that look too risky or unsupported by data.
 
 Rules:
-- "Approve" means the current optimizer output looks directionally sound.
-- "Approve with Caution" means mostly good but there are meaningful risks.
-- "Needs Review" means do not trust the current output without manual review.
-- Keep the response concise.
-- Use only the provided data.
-- Never output markdown. JSON only.
+- Be conservative.
+- Prefer KEEP over MODIFY.
+- Prefer REMOVE over risky scaling.
+- Do not invent data.
+- For bid actions, new_action may only be: INCREASE_BID, DECREASE_BID, or NO_ACTION.
+- For budget actions, new_action may only be: INCREASE_BUDGET, DECREASE_BUDGET, or NO_ACTION.
+- For harvest actions, new_action may only be: HARVEST_TO_EXACT or NO_ACTION.
+- For negative keyword actions, new_action may only be: ADD_NEGATIVE_PHRASE or NO_ACTION.
+- If decision is KEEP, do not use new_action.
+- If decision is REMOVE, do not use new_action.
+- If decision is MODIFY, you must supply new_action.
+
+Return structured JSON only.
 """
 
     response = client.responses.create(
         model=model,
         instructions=instructions,
         input=payload_json,
-        max_output_tokens=1200,
+        max_output_tokens=1400,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "ai_overrides",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "executive_summary": {"type": "string"},
+                        "overrides": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "decision": {
+                                        "type": "string",
+                                        "enum": ["KEEP", "MODIFY", "REMOVE"]
+                                    },
+                                    "new_action": {"type": "string"},
+                                    "reason": {"type": "string"}
+                                },
+                                "required": ["id", "decision", "reason"]
+                            }
+                        }
+                    },
+                    "required": ["executive_summary", "overrides"]
+                }
+            }
+        }
     )
 
-    raw_text = response.output_text.strip()
+    raw_text = (response.output_text or "").strip()
+
+    if not raw_text:
+        raise ValueError("OpenAI returned empty response.")
+
     return json.loads(raw_text)
 
 
-def get_ai_decision_review(
-    account_health: dict,
+def build_ai_action_candidates(
+    combined_bulk_updates: pd.DataFrame,
+    bid_recommendations: pd.DataFrame,
+    search_term_actions: pd.DataFrame,
+    campaign_budget_actions: pd.DataFrame,
+) -> pd.DataFrame:
+    if combined_bulk_updates.empty:
+        return pd.DataFrame()
+
+    combined = combined_bulk_updates.copy()
+    combined["id"] = combined.index.astype(str)
+
+    bid = bid_recommendations.copy() if not bid_recommendations.empty else pd.DataFrame()
+    search = search_term_actions.copy() if not search_term_actions.empty else pd.DataFrame()
+    budget = campaign_budget_actions.copy() if not campaign_budget_actions.empty else pd.DataFrame()
+
+    if not bid.empty:
+        bid["_campaign_key"] = bid["campaign_name"].map(normalize_match_text)
+        bid["_ad_group_key"] = bid["ad_group_name"].map(normalize_match_text)
+        bid["_term_key"] = bid["target"].map(normalize_term_text)
+        bid["_match_key"] = bid["match_type"].map(normalize_match_text)
+
+    if not search.empty:
+        search["_campaign_key"] = search["campaign_name"].map(normalize_match_text)
+        search["_ad_group_key"] = search["ad_group_name"].map(normalize_match_text)
+        search["_term_key"] = search["search_term"].map(normalize_term_text)
+        search["_action_key"] = search["search_term_action"].astype(str).str.upper()
+
+    if not budget.empty:
+        budget["_campaign_key"] = budget["campaign_name"].map(normalize_match_text)
+        budget["_action_key"] = budget["campaign_action"].astype(str).str.upper()
+
+    rows = []
+
+    for _, row in combined.iterrows():
+        candidate = {
+            "id": str(row.get("id", "")),
+            "source_type": "unknown",
+            "optimizer_action": str(row.get("Optimizer Action", "")),
+            "campaign_name": str(row.get("Campaign Name", "")),
+            "ad_group_name": str(row.get("Ad Group Name", "")),
+            "keyword_text": str(row.get("Keyword Text", "")),
+            "match_type": str(row.get("Match Type", "")),
+            "entity": str(row.get("Entity", "")),
+            "clicks": 0.0,
+            "orders": 0.0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "roas": 0.0,
+            "impression_share_pct": 0.0,
+            "current_bid": None,
+            "recommended_bid": None,
+            "current_daily_budget": None,
+            "recommended_daily_budget": None,
+            "existing_action": str(row.get("Optimizer Action", "")),
+        }
+
+        campaign_key = normalize_match_text(row.get("Campaign Name", ""))
+        ad_group_key = normalize_match_text(row.get("Ad Group Name", ""))
+        term_key = normalize_term_text(row.get("Keyword Text", ""))
+        match_key = normalize_match_text(row.get("Match Type", ""))
+        optimizer_action = str(row.get("Optimizer Action", "")).upper()
+        entity = str(row.get("Entity", ""))
+
+        # Bid rows
+        if entity == "Keyword" and optimizer_action in {"INCREASE_BID", "DECREASE_BID"} and not bid.empty:
+            match = bid[
+                (bid["_campaign_key"] == campaign_key)
+                & (bid["_ad_group_key"] == ad_group_key)
+                & (bid["_term_key"] == term_key)
+                & (bid["_match_key"] == match_key)
+                & (bid["recommended_action"].astype(str).str.upper() == optimizer_action)
+            ]
+
+            if not match.empty:
+                m = match.iloc[0]
+                candidate.update(
+                    {
+                        "source_type": "bid",
+                        "clicks": get_number(m.get("clicks")),
+                        "orders": get_number(m.get("orders")),
+                        "spend": get_number(m.get("spend")),
+                        "sales": get_number(m.get("sales")),
+                        "roas": get_number(m.get("roas")),
+                        "impression_share_pct": get_number(m.get("impression_share_pct")),
+                        "current_bid": get_number(m.get("current_bid")),
+                        "recommended_bid": get_number(m.get("recommended_bid")),
+                    }
+                )
+
+        # Harvest / negative rows
+        elif optimizer_action in {"HARVEST_TO_EXACT", "ADD_NEGATIVE_PHRASE"} and not search.empty:
+            match = search[
+                (search["_campaign_key"] == campaign_key)
+                & (search["_ad_group_key"] == ad_group_key)
+                & (search["_term_key"] == term_key)
+                & (search["_action_key"] == optimizer_action)
+            ]
+
+            if not match.empty:
+                m = match.iloc[0]
+                source_type = "search_harvest" if optimizer_action == "HARVEST_TO_EXACT" else "negative_keyword"
+                candidate.update(
+                    {
+                        "source_type": source_type,
+                        "clicks": get_number(m.get("clicks")),
+                        "orders": get_number(m.get("orders")),
+                        "spend": get_number(m.get("spend")),
+                        "sales": get_number(m.get("sales")),
+                        "roas": get_number(m.get("roas")),
+                        "impression_share_pct": 0.0,
+                    }
+                )
+
+        # Budget rows
+        elif entity == "Campaign" and optimizer_action in {"INCREASE_BUDGET", "DECREASE_BUDGET"} and not budget.empty:
+            match = budget[
+                (budget["_campaign_key"] == campaign_key)
+                & (budget["_action_key"] == optimizer_action)
+            ]
+
+            if not match.empty:
+                m = match.iloc[0]
+                candidate.update(
+                    {
+                        "source_type": "budget",
+                        "clicks": get_number(m.get("clicks")),
+                        "orders": get_number(m.get("orders")),
+                        "spend": get_number(m.get("spend")),
+                        "sales": get_number(m.get("sales")),
+                        "roas": get_number(m.get("roas")),
+                        "impression_share_pct": get_number(m.get("avg_impression_share_pct")),
+                        "current_daily_budget": get_number(m.get("daily_budget")),
+                        "recommended_daily_budget": get_number(m.get("recommended_daily_budget")),
+                    }
+                )
+
+        candidate["confidence"] = score_action_confidence(candidate)
+        rows.append(candidate)
+
+    return pd.DataFrame(rows)
+
+
+def build_ai_override_payload(
+    low_conf_df: pd.DataFrame,
     account_summary: dict,
-    preview: dict,
-    campaign_health_dashboard: pd.DataFrame,
-    smart_warnings: list,
-    optimization_suggestions: list,
-    model: str,
+    account_health: dict,
+    simulation_summary: dict,
 ) -> dict:
-    payload = build_ai_decision_payload(
-        account_health=account_health,
-        account_summary=account_summary,
-        preview=preview,
-        campaign_health_dashboard=campaign_health_dashboard,
-        smart_warnings=smart_warnings,
-        optimization_suggestions=optimization_suggestions,
-    )
-    payload_json = json.dumps(payload, sort_keys=True, default=str)
-    return run_ai_review_cached(payload_json, model)
+    keep_cols = [
+        "id",
+        "source_type",
+        "optimizer_action",
+        "campaign_name",
+        "ad_group_name",
+        "keyword_text",
+        "match_type",
+        "clicks",
+        "orders",
+        "spend",
+        "sales",
+        "roas",
+        "impression_share_pct",
+        "current_bid",
+        "recommended_bid",
+        "current_daily_budget",
+        "recommended_daily_budget",
+        "confidence",
+    ]
+    cols = [c for c in keep_cols if c in low_conf_df.columns]
+
+    return {
+        "account_summary": account_summary,
+        "account_health": account_health,
+        "simulation_summary": simulation_summary,
+        "low_confidence_actions": low_conf_df[cols].to_dict(orient="records"),
+    }
 
 
-def render_ai_review_block(title: str, note: str, ai_review: dict) -> None:
-    st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="section-note">{note}</div>', unsafe_allow_html=True)
+def apply_ai_overrides_to_combined(
+    combined_bulk_updates: pd.DataFrame,
+    ai_response: dict,
+    ai_candidates_df: pd.DataFrame,
+    strategy_mode: str,
+    max_bid_cap: float,
+    max_budget_cap: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if combined_bulk_updates.empty:
+        return combined_bulk_updates.copy(), pd.DataFrame()
 
-    verdict = ai_review.get("ai_verdict", "Unavailable")
-    summary = ai_review.get("executive_summary", "No summary returned.")
-    priority_actions = safe_list(ai_review.get("priority_actions"))
-    risk_flags = safe_list(ai_review.get("risk_flags"))
-    scaling_opportunities = safe_list(ai_review.get("scaling_opportunities"))
+    strategy = get_strategy_parameters(strategy_mode)
+    override_map = {str(o.get("id")): o for o in ai_response.get("overrides", [])}
+    candidate_map = {
+        str(row["id"]): row.to_dict()
+        for _, row in ai_candidates_df.iterrows()
+        if "id" in ai_candidates_df.columns
+    }
 
-    st.markdown(f"**AI Verdict:** {verdict}")
-    st.markdown(summary)
+    updated_rows = []
+    log_rows = []
 
-    a1, a2 = st.columns(2)
+    for idx, row in combined_bulk_updates.copy().iterrows():
+        row_dict = row.to_dict()
+        rid = str(idx)
 
-    with a1:
-        st.markdown("**Priority Actions**")
-        if priority_actions:
-            for item in priority_actions:
-                st.markdown(
-                    f"- **{item.get('priority', 'Medium')}** — {item.get('action', '')}: {item.get('reason', '')}"
-                )
-        else:
-            st.info("No priority actions returned.")
+        original_action = str(row_dict.get("Optimizer Action", ""))
+        final_action = original_action
+        decision = "KEEP"
+        reason = ""
+        source_type = candidate_map.get(rid, {}).get("source_type", "unknown")
+        was_removed = False
 
-    with a2:
-        st.markdown("**Risk Flags**")
-        if risk_flags:
-            for item in risk_flags:
-                st.markdown(
-                    f"- **{item.get('severity', 'Medium')}** — {item.get('flag', '')}: {item.get('reason', '')}"
-                )
-        else:
-            st.info("No material risks flagged.")
+        override = override_map.get(rid)
 
-    st.markdown("**Scaling Opportunities**")
-    if scaling_opportunities:
-        for item in scaling_opportunities:
-            st.markdown(
-                f"- **{item.get('campaign_name', 'Unknown Campaign')}**: {item.get('reason', '')}"
-            )
-    else:
-        st.info("No specific scaling opportunities returned.")
+        if override:
+            decision = str(override.get("decision", "KEEP")).upper()
+            reason = str(override.get("reason", "")).strip()
+            new_action = str(override.get("new_action", "")).upper().strip()
+
+            if decision == "REMOVE" or new_action == "NO_ACTION":
+                was_removed = True
+
+            elif decision == "MODIFY":
+                candidate = candidate_map.get(rid, {})
+                current_bid = get_number(candidate.get("current_bid"))
+                current_budget = get_number(candidate.get("current_daily_budget"))
+
+                if source_type == "bid" and new_action in {"INCREASE_BID", "DECREASE_BID"} and current_bid > 0:
+                    final_action = new_action
+                    if new_action == "INCREASE_BID":
+                        new_bid = round(min(current_bid * (1 + strategy["max_bid_up"]), max_bid_cap), 2)
+                    else:
+                        new_bid = round(max(current_bid * (1 - strategy["max_bid_down"]), 0.02), 2)
+                    row_dict["Bid"] = new_bid
+
+                elif source_type == "budget" and new_action in {"INCREASE_BUDGET", "DECREASE_BUDGET"} and current_budget > 0:
+                    final_action = new_action
+                    if new_action == "INCREASE_BUDGET":
+                        new_budget = round(min(current_budget * (1 + strategy["budget_up_pct"]), max_budget_cap), 2)
+                    else:
+                        new_budget = round(max(current_budget * (1 - strategy["budget_down_pct"]), 1.00), 2)
+                    row_dict["Daily Budget"] = new_budget
+
+                elif source_type == "search_harvest" and new_action == "HARVEST_TO_EXACT":
+                    final_action = new_action
+
+                elif source_type == "negative_keyword" and new_action == "ADD_NEGATIVE_PHRASE":
+                    final_action = new_action
+
+                else:
+                    final_action = original_action
+
+        if not was_removed:
+            row_dict["Optimizer Action"] = final_action
+            updated_rows.append(row_dict)
+
+        candidate = candidate_map.get(rid, {})
+        log_rows.append(
+            {
+                "ID": rid,
+                "Source Type": source_type,
+                "Campaign Name": candidate.get("campaign_name", row_dict.get("Campaign Name", "")),
+                "Ad Group Name": candidate.get("ad_group_name", row_dict.get("Ad Group Name", "")),
+                "Keyword Text": candidate.get("keyword_text", row_dict.get("Keyword Text", "")),
+                "Confidence": candidate.get("confidence", ""),
+                "Clicks": candidate.get("clicks", 0),
+                "Orders": candidate.get("orders", 0),
+                "Spend": candidate.get("spend", 0),
+                "Sales": candidate.get("sales", 0),
+                "ROAS": candidate.get("roas", 0),
+                "Original Action": original_action,
+                "Decision": decision,
+                "Final Action": "REMOVED" if was_removed else final_action,
+                "Reason": reason,
+            }
+        )
+
+    updated_df = pd.DataFrame(updated_rows)
+    log_df = pd.DataFrame(log_rows)
+
+    return updated_df, log_df
+
+
+def build_ai_impact_summary(
+    ai_candidates_df: pd.DataFrame,
+    ai_override_log_df: pd.DataFrame,
+    original_count: int,
+    final_count: int,
+    executive_summary: str,
+) -> dict:
+    if ai_override_log_df.empty:
+        return {
+            "reviewed": 0,
+            "kept": 0,
+            "modified": 0,
+            "removed": 0,
+            "removed_spend": 0.0,
+            "removed_sales": 0.0,
+            "original_count": original_count,
+            "final_count": final_count,
+            "executive_summary": executive_summary,
+        }
+
+    reviewed = len(ai_override_log_df)
+    kept = int((ai_override_log_df["Decision"] == "KEEP").sum())
+    modified = int((ai_override_log_df["Decision"] == "MODIFY").sum())
+    removed = int((ai_override_log_df["Final Action"] == "REMOVED").sum())
+
+    removed_rows = ai_override_log_df[ai_override_log_df["Final Action"] == "REMOVED"]
+
+    return {
+        "reviewed": reviewed,
+        "kept": kept,
+        "modified": modified,
+        "removed": removed,
+        "removed_spend": round(float(pd.to_numeric(removed_rows["Spend"], errors="coerce").fillna(0).sum()), 2),
+        "removed_sales": round(float(pd.to_numeric(removed_rows["Sales"], errors="coerce").fillna(0).sum()), 2),
+        "original_count": original_count,
+        "final_count": final_count,
+        "executive_summary": executive_summary,
+    }
 
 
 # =========================================================
@@ -548,30 +875,19 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("## AI Review Layer")
+    st.markdown("## AI Optimization Layer")
 
-    enable_ai_review = st.checkbox("Enable AI Decision Review", value=False)
-
-    ai_model = st.text_input(
-        "OpenAI Model",
-        value="gpt-4o",
-        disabled=not enable_ai_review,
-        help="AI reviews optimizer output but does not change bulk uploads.",
-    )
-
-    advisory_only = st.checkbox(
-        "Advisory Only",
-        value=True,
-        disabled=not enable_ai_review,
-        help="Recommended. AI provides review and prioritization only.",
-    )
+    enable_ai_review = st.checkbox("Enable AI Optimization Layer", value=True)
+    if enable_ai_review:
+        st.caption("AI automatically reviews low-confidence actions after optimization and refines the final output.")
+        st.caption(f"AI Model: {get_openai_model()}")
 
     api_key_present = bool(get_openai_api_key())
     if enable_ai_review and not api_key_present:
         st.warning("OPENAI_API_KEY not found. Add it to environment variables or Streamlit secrets.")
 
     st.markdown("---")
-    st.markdown("**Version:** 1.1")
+    st.markdown("**Version:** 1.2")
     st.markdown("**Owner:** Jake Yorgason, Evolved Commerce")
 
 
@@ -592,7 +908,7 @@ with header_right:
         <div class="brand-shell">
             <div class="brand-title">Evolved Commerce<br>Amazon Ads Command Center</div>
             <div class="brand-subtitle">
-                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • AI review
+                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • AI optimization
             </div>
         </div>
         """,
@@ -772,6 +1088,7 @@ if enable_monthly_budget_control and monthly_account_budget > 0:
     pacing_status = "Over Pace" if current_daily_pace > pacing_limit else "On Pace"
 
     p1, p2, p3, p4 = st.columns(4)
+
     with p1:
         st.metric("Remaining Budget", f"${remaining_budget:,.2f}")
     with p2:
@@ -905,18 +1222,10 @@ if diagnostics is not None:
     dh1, dh2, dh3, dh4, dh5, dh6 = st.columns(6)
 
     with dh1:
-        render_metric_card(
-            "Ad Spend",
-            f"${get_number(account_summary.get('total_spend')):,.2f}",
-            tone="brand",
-        )
+        render_metric_card("Ad Spend", f"${get_number(account_summary.get('total_spend')):,.2f}", tone="brand")
 
     with dh2:
-        render_metric_card(
-            "Ad Sales",
-            f"${get_number(account_summary.get('total_sales')):,.2f}",
-            tone="brand",
-        )
+        render_metric_card("Ad Sales", f"${get_number(account_summary.get('total_sales')):,.2f}", tone="brand")
 
     with dh3:
         roas_tone = "good" if account_roas >= adjusted_min_roas else "bad"
@@ -926,18 +1235,10 @@ if diagnostics is not None:
         render_metric_card("TACOS", str(tacos_display), tone="warn", small=True)
 
     with dh5:
-        render_metric_card(
-            "Under Target",
-            str(get_int(account_summary.get("campaigns_under_target"))),
-            tone="bad",
-        )
+        render_metric_card("Under Target", str(get_int(account_summary.get("campaigns_under_target"))), tone="bad")
 
     with dh6:
-        render_metric_card(
-            "Scalable",
-            str(get_int(account_summary.get("campaigns_scalable"))),
-            tone="good",
-        )
+        render_metric_card("Scalable", str(get_int(account_summary.get("campaigns_scalable"))), tone="good")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -977,19 +1278,14 @@ if diagnostics is not None:
 
     with pr1:
         render_metric_card("Bid Increases", str(get_int(preview.get("bid_increases"))), tone="good")
-
     with pr2:
         render_metric_card("Bid Decreases", str(get_int(preview.get("bid_decreases"))), tone="warn")
-
     with pr3:
         render_metric_card("Negatives", str(get_int(preview.get("negatives_added"))), tone="warn")
-
     with pr4:
         render_metric_card("Harvests", str(get_int(preview.get("harvested_keywords"))), tone="good")
-
     with pr5:
         render_metric_card("Budget Increases", str(get_int(preview.get("budget_increases"))), tone="good")
-
     with pr6:
         render_metric_card("Budget Decreases", str(get_int(preview.get("budget_decreases"))), tone="warn")
 
@@ -999,27 +1295,9 @@ if diagnostics is not None:
         else:
             st.info("No campaign health table available.")
 
-    if enable_ai_review:
+    if enable_ai_review and api_key_present:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        try:
-            ai_review = get_ai_decision_review(
-                account_health=account_health,
-                account_summary=account_summary,
-                preview=preview,
-                campaign_health_dashboard=campaign_health_dashboard,
-                smart_warnings=smart_warnings,
-                optimization_suggestions=optimization_suggestions,
-                model=ai_model,
-            )
-            st.session_state["last_ai_review"] = ai_review
-
-            render_ai_review_block(
-                title="AI Decision Review",
-                note="AI reviews the rule-based recommendations and highlights priorities, risks, and scale opportunities.",
-                ai_review=ai_review,
-            )
-        except Exception as e:
-            st.error(f"AI review failed: {e}")
+        st.info("AI optimization is enabled. After you run the optimizer, AI will automatically review low-confidence actions and refine the final bulk output.")
 
 
 # =========================================================
@@ -1067,8 +1345,8 @@ if enable_monthly_budget_control and monthly_account_budget > 0:
         "- Monthly budget control is enabled. If current pacing exceeds the allowed pace for the month, the app will block budget increases and block bid increases."
     )
 
-if enable_ai_review and advisory_only:
-    st.markdown("- AI review is enabled in **advisory only** mode. It will not directly change bids or exported bulk actions.")
+if enable_ai_review:
+    st.markdown("- AI optimization is enabled. It will automatically review only low-confidence actions and refine the final bulk upload output.")
 
 
 # =========================================================
@@ -1112,6 +1390,59 @@ if "last_outputs" in st.session_state:
     output_optimization_suggestions = safe_list(outputs.get("optimization_suggestions"))
     output_account_summary = safe_dict(outputs.get("account_summary"))
 
+    ai_candidates_df = pd.DataFrame()
+    ai_override_log_df = pd.DataFrame()
+    ai_impact_summary = {}
+    ai_executive_summary = ""
+
+    original_bulk_count = len(combined_bulk_updates)
+
+    if enable_ai_review and api_key_present and not combined_bulk_updates.empty:
+        try:
+            ai_candidates_df = build_ai_action_candidates(
+                combined_bulk_updates=combined_bulk_updates,
+                bid_recommendations=bid_recommendations,
+                search_term_actions=search_term_actions,
+                campaign_budget_actions=campaign_budget_actions,
+            )
+
+            low_conf_df = ai_candidates_df[ai_candidates_df["confidence"] == "LOW"].copy().head(25)
+
+            if not low_conf_df.empty:
+                payload = build_ai_override_payload(
+                    low_conf_df=low_conf_df,
+                    account_summary=output_account_summary,
+                    account_health=output_account_health,
+                    simulation_summary=simulation_summary,
+                )
+
+                ai_response = run_ai_review_cached(
+                    payload_json=json.dumps(payload, default=str),
+                    model=get_openai_model(),
+                )
+
+                ai_executive_summary = str(ai_response.get("executive_summary", "")).strip()
+
+                combined_bulk_updates, ai_override_log_df = apply_ai_overrides_to_combined(
+                    combined_bulk_updates=combined_bulk_updates,
+                    ai_response=ai_response,
+                    ai_candidates_df=ai_candidates_df,
+                    strategy_mode=strategy_mode,
+                    max_bid_cap=max_bid_cap,
+                    max_budget_cap=max_budget_cap,
+                )
+
+                ai_impact_summary = build_ai_impact_summary(
+                    ai_candidates_df=low_conf_df,
+                    ai_override_log_df=ai_override_log_df,
+                    original_count=original_bulk_count,
+                    final_count=len(combined_bulk_updates),
+                    executive_summary=ai_executive_summary,
+                )
+
+        except Exception as e:
+            st.warning(f"AI optimization skipped: {e}")
+
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">Optimization Summary</div>', unsafe_allow_html=True)
@@ -1123,46 +1454,55 @@ if "last_outputs" in st.session_state:
     summary1, summary2, summary3, summary4, summary5, summary6 = st.columns(6)
 
     with summary1:
-        render_metric_card(
-            "Bid Increases",
-            str(get_int(simulation_summary.get("bid_increases"))),
-            tone="good",
-        )
+        render_metric_card("Bid Increases", str(get_int(simulation_summary.get("bid_increases"))), tone="good")
 
     with summary2:
-        render_metric_card(
-            "Bid Decreases",
-            str(get_int(simulation_summary.get("bid_decreases"))),
-            tone="warn",
-        )
+        render_metric_card("Bid Decreases", str(get_int(simulation_summary.get("bid_decreases"))), tone="warn")
 
     with summary3:
-        render_metric_card(
-            "Negatives",
-            str(get_int(simulation_summary.get("negatives_added"))),
-            tone="warn",
-        )
+        render_metric_card("Negatives", str(get_int(simulation_summary.get("negatives_added"))), tone="warn")
 
     with summary4:
-        render_metric_card(
-            "Harvests",
-            str(get_int(simulation_summary.get("harvested_keywords"))),
-            tone="good",
-        )
+        render_metric_card("Harvests", str(get_int(simulation_summary.get("harvested_keywords"))), tone="good")
 
     with summary5:
-        render_metric_card(
-            "Budget Increases",
-            str(get_int(simulation_summary.get("budget_increases"))),
-            tone="good",
-        )
+        render_metric_card("Budget Increases", str(get_int(simulation_summary.get("budget_increases"))), tone="good")
 
     with summary6:
-        render_metric_card(
-            "Budget Decreases",
-            str(get_int(simulation_summary.get("budget_decreases"))),
-            tone="warn",
+        render_metric_card("Budget Decreases", str(get_int(simulation_summary.get("budget_decreases"))), tone="warn")
+
+    if enable_ai_review and ai_impact_summary:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="section-title">AI Impact Reporting</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-note">AI reviewed only low-confidence actions and refined the final bulk output.</div>',
+            unsafe_allow_html=True,
         )
+
+        ai1, ai2, ai3, ai4, ai5, ai6 = st.columns(6)
+
+        with ai1:
+            render_metric_card("Reviewed", str(get_int(ai_impact_summary.get("reviewed"))), tone="brand")
+        with ai2:
+            render_metric_card("Modified", str(get_int(ai_impact_summary.get("modified"))), tone="warn")
+        with ai3:
+            render_metric_card("Removed", str(get_int(ai_impact_summary.get("removed"))), tone="bad")
+        with ai4:
+            render_metric_card("Final Output Rows", str(get_int(ai_impact_summary.get("final_count"))), tone="good")
+        with ai5:
+            render_metric_card("Removed Spend", f"${get_number(ai_impact_summary.get('removed_spend')):,.2f}", tone="warn", small=True)
+        with ai6:
+            render_metric_card("Removed Sales", f"${get_number(ai_impact_summary.get('removed_sales')):,.2f}", tone="warn", small=True)
+
+        if ai_executive_summary:
+            st.markdown(f"**AI Summary:** {ai_executive_summary}")
+
+        with st.expander("AI Override Log", expanded=False):
+            if not ai_override_log_df.empty:
+                st.dataframe(ai_override_log_df, use_container_width=True)
+            else:
+                st.info("No AI override actions were recorded.")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1182,27 +1522,6 @@ if "last_outputs" in st.session_state:
     for point in narrative_points:
         st.markdown(f"- {point}")
 
-    if enable_ai_review:
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        try:
-            ai_post_review = get_ai_decision_review(
-                account_health=output_account_health,
-                account_summary=output_account_summary,
-                preview=simulation_summary,
-                campaign_health_dashboard=output_campaign_health_dashboard,
-                smart_warnings=output_smart_warnings,
-                optimization_suggestions=output_optimization_suggestions,
-                model=ai_model,
-            )
-
-            render_ai_review_block(
-                title="AI Post-Run Review",
-                note="AI reviews the generated optimization output before export.",
-                ai_review=ai_post_review,
-            )
-        except Exception as e:
-            st.error(f"AI post-run review failed: {e}")
-
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">Results Explorer</div>', unsafe_allow_html=True)
@@ -1211,14 +1530,14 @@ if "last_outputs" in st.session_state:
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        [
-            "Bulk Upload",
-            "Bid Recommendations",
-            "Search Term Actions",
-            "Budget Actions",
-        ]
-    )
+    tab_names = [
+        "Bulk Upload",
+        "Bid Recommendations",
+        "Search Term Actions",
+        "Budget Actions",
+        "AI Override Log",
+    ]
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(tab_names)
 
     with tab1:
         if not combined_bulk_updates.empty:
@@ -1243,6 +1562,12 @@ if "last_outputs" in st.session_state:
             st.dataframe(campaign_budget_actions, use_container_width=True)
         else:
             st.info("No campaign budget actions available.")
+
+    with tab5:
+        if not ai_override_log_df.empty:
+            st.dataframe(ai_override_log_df, use_container_width=True)
+        else:
+            st.info("No AI override log available for this run.")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1292,6 +1617,16 @@ if "last_outputs" in st.session_state:
             file_name="campaign_budget_actions.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_campaign_budget_actions_xlsx",
+            use_container_width=True,
+        )
+
+    if not ai_override_log_df.empty:
+        st.download_button(
+            label="Download AI Override Log",
+            data=to_excel_bytes(ai_override_log_df),
+            file_name="ai_override_log.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_ai_override_log_xlsx",
             use_container_width=True,
         )
 
