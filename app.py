@@ -1,11 +1,14 @@
 import io
 import os
+import json
 import calendar
 from datetime import date
 from typing import Optional, Any
 
 import pandas as pd
 import streamlit as st
+from openai import OpenAI
+
 from ads_optimizer_ingestion import AdsOptimizerEngine
 
 st.set_page_config(
@@ -65,6 +68,56 @@ def bytes_to_buffer(file_bytes):
     if file_bytes is None:
         return None
     return io.BytesIO(file_bytes)
+
+
+def load_logo_path() -> Optional[str]:
+    possible_paths = [
+        "assets/ec_logo.png",
+        "assets/ec_logo.jpg",
+        "assets/ec_logo.jpeg",
+        "assets/logo.png",
+        "assets/logo.jpg",
+        "ec_logo.png",
+        "logo.png",
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def upload_status_line(file_obj, success_text: str) -> None:
+    if file_obj is not None:
+        st.success(success_text)
+
+
+def render_metric_card(label: str, value: str, tone: str = "brand", small: bool = False) -> None:
+    value_class = "metric-value small" if small else "metric-value"
+    st.markdown(
+        f"""
+        <div class="metric-card {tone}">
+            <div class="metric-label">{label}</div>
+            <div class="{value_class}">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_openai_api_key() -> Optional[str]:
+    try:
+        if "OPENAI_API_KEY" in st.secrets:
+            return st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        pass
+    return os.getenv("OPENAI_API_KEY")
+
+
+def get_openai_client() -> Optional[OpenAI]:
+    api_key = get_openai_api_key()
+    if not api_key:
+        return None
+    return OpenAI(api_key=api_key)
 
 
 def build_narrative(
@@ -138,38 +191,164 @@ def build_narrative(
     return notes
 
 
-def load_logo_path() -> Optional[str]:
-    possible_paths = [
-        "assets/ec_logo.png",
-        "assets/ec_logo.jpg",
-        "assets/ec_logo.jpeg",
-        "assets/logo.png",
-        "assets/logo.jpg",
-        "ec_logo.png",
-        "logo.png",
-    ]
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
-    return None
+def build_ai_decision_payload(
+    account_health: dict,
+    account_summary: dict,
+    preview: dict,
+    campaign_health_dashboard: pd.DataFrame,
+    smart_warnings: list,
+    optimization_suggestions: list,
+) -> dict:
+    top_campaigns = pd.DataFrame()
+
+    if campaign_health_dashboard is not None and not campaign_health_dashboard.empty:
+        cols_to_keep = [
+            c
+            for c in [
+                "campaign_name",
+                "campaign_status",
+                "spend",
+                "sales",
+                "orders",
+                "clicks",
+                "roas",
+                "acos",
+                "avg_impression_share_pct",
+            ]
+            if c in campaign_health_dashboard.columns
+        ]
+
+        top_campaigns = (
+            campaign_health_dashboard[cols_to_keep]
+            .sort_values(by=["spend", "sales"], ascending=[False, False])
+            .head(12)
+            .copy()
+        )
+
+    return {
+        "account_health": account_health,
+        "account_summary": account_summary,
+        "pre_run_preview": preview,
+        "smart_warnings": smart_warnings[:6],
+        "optimization_suggestions": optimization_suggestions[:6],
+        "top_campaigns": top_campaigns.to_dict(orient="records"),
+    }
 
 
-def upload_status_line(file_obj, success_text: str) -> None:
-    if file_obj is not None:
-        st.success(success_text)
+@st.cache_data(show_spinner=False, ttl=900)
+def run_ai_review_cached(payload_json: str, model: str) -> dict:
+    client = get_openai_client()
+    if client is None:
+        raise ValueError("OPENAI_API_KEY not found.")
 
+    instructions = """
+You are an expert Amazon Sponsored Products optimization reviewer.
 
-def render_metric_card(label: str, value: str, tone: str = "brand", small: bool = False) -> None:
-    value_class = "metric-value small" if small else "metric-value"
-    st.markdown(
-        f"""
-        <div class="metric-card {tone}">
-            <div class="metric-label">{label}</div>
-            <div class="{value_class}">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+Your job:
+- Review the rule-based optimizer output.
+- Do NOT invent data.
+- Do NOT override obvious guardrails recklessly.
+- Focus on prioritization, risk, scale opportunities, and missed context.
+
+Return valid JSON only with this exact shape:
+{
+  "executive_summary": "string",
+  "priority_actions": [
+    {"action": "string", "reason": "string", "priority": "High|Medium|Low"}
+  ],
+  "risk_flags": [
+    {"flag": "string", "reason": "string", "severity": "High|Medium|Low"}
+  ],
+  "scaling_opportunities": [
+    {"campaign_name": "string", "reason": "string"}
+  ],
+  "ai_verdict": "Approve|Approve with Caution|Needs Review"
+}
+
+Rules:
+- "Approve" means the current optimizer output looks directionally sound.
+- "Approve with Caution" means mostly good but there are meaningful risks.
+- "Needs Review" means do not trust the current output without manual review.
+- Keep the response concise.
+- Use only the provided data.
+- Never output markdown. JSON only.
+"""
+
+    response = client.responses.create(
+        model=model,
+        instructions=instructions,
+        input=payload_json,
+        max_output_tokens=1200,
     )
+
+    raw_text = response.output_text.strip()
+    return json.loads(raw_text)
+
+
+def get_ai_decision_review(
+    account_health: dict,
+    account_summary: dict,
+    preview: dict,
+    campaign_health_dashboard: pd.DataFrame,
+    smart_warnings: list,
+    optimization_suggestions: list,
+    model: str,
+) -> dict:
+    payload = build_ai_decision_payload(
+        account_health=account_health,
+        account_summary=account_summary,
+        preview=preview,
+        campaign_health_dashboard=campaign_health_dashboard,
+        smart_warnings=smart_warnings,
+        optimization_suggestions=optimization_suggestions,
+    )
+    payload_json = json.dumps(payload, sort_keys=True, default=str)
+    return run_ai_review_cached(payload_json, model)
+
+
+def render_ai_review_block(title: str, note: str, ai_review: dict) -> None:
+    st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-note">{note}</div>', unsafe_allow_html=True)
+
+    verdict = ai_review.get("ai_verdict", "Unavailable")
+    summary = ai_review.get("executive_summary", "No summary returned.")
+    priority_actions = safe_list(ai_review.get("priority_actions"))
+    risk_flags = safe_list(ai_review.get("risk_flags"))
+    scaling_opportunities = safe_list(ai_review.get("scaling_opportunities"))
+
+    st.markdown(f"**AI Verdict:** {verdict}")
+    st.markdown(summary)
+
+    a1, a2 = st.columns(2)
+
+    with a1:
+        st.markdown("**Priority Actions**")
+        if priority_actions:
+            for item in priority_actions:
+                st.markdown(
+                    f"- **{item.get('priority', 'Medium')}** — {item.get('action', '')}: {item.get('reason', '')}"
+                )
+        else:
+            st.info("No priority actions returned.")
+
+    with a2:
+        st.markdown("**Risk Flags**")
+        if risk_flags:
+            for item in risk_flags:
+                st.markdown(
+                    f"- **{item.get('severity', 'Medium')}** — {item.get('flag', '')}: {item.get('reason', '')}"
+                )
+        else:
+            st.info("No material risks flagged.")
+
+    st.markdown("**Scaling Opportunities**")
+    if scaling_opportunities:
+        for item in scaling_opportunities:
+            st.markdown(
+                f"- **{item.get('campaign_name', 'Unknown Campaign')}**: {item.get('reason', '')}"
+            )
+    else:
+        st.info("No specific scaling opportunities returned.")
 
 
 # =========================================================
@@ -268,18 +447,6 @@ st.markdown(
             min-height: 80px;
         }
 
-        .metric-value {
-            font-size: 1.5rem;   /* ↓ from 2rem */
-            line-height: 1.1;
-            font-weight: 800;
-            color: #1F2937;
-            word-break: break-word;
-        }
-
-        .metric-value.small {
-            font-size: 1.15rem;  /* ↓ from 1.35rem */
-        }
-
         .metric-label {
             font-size: 0.75rem;
             color: #6B7280;
@@ -287,9 +454,16 @@ st.markdown(
             font-weight: 600;
         }
 
-        .metric-card {
-            padding: 12px 14px;   /* slightly tighter */
-            min-height: 80px;     /* ↓ from 92px */
+        .metric-value {
+            font-size: 1.5rem;
+            line-height: 1.1;
+            font-weight: 800;
+            color: #1F2937;
+            word-break: break-word;
+        }
+
+        .metric-value.small {
+            font-size: 1.15rem;
         }
 
         .metric-card.good {
@@ -374,8 +548,31 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    st.markdown("## AI Review Layer")
+
+    enable_ai_review = st.checkbox("Enable AI Decision Review", value=False)
+
+    ai_model = st.text_input(
+        "OpenAI Model",
+        value="gpt-4o",
+        disabled=not enable_ai_review,
+        help="AI reviews optimizer output but does not change bulk uploads.",
+    )
+
+    advisory_only = st.checkbox(
+        "Advisory Only",
+        value=True,
+        disabled=not enable_ai_review,
+        help="Recommended. AI provides review and prioritization only.",
+    )
+
+    api_key_present = bool(get_openai_api_key())
+    if enable_ai_review and not api_key_present:
+        st.warning("OPENAI_API_KEY not found. Add it to environment variables or Streamlit secrets.")
+
+    st.markdown("---")
     st.markdown("**Version:** 1.1")
-    st.markdown("**Owner:** Jake Yorgason, Evolved Commerce")
+    st.markdown("**Owner:** Evolved Commerce")
 
 
 # =========================================================
@@ -395,7 +592,7 @@ with header_right:
         <div class="brand-shell">
             <div class="brand-title">Evolved Commerce<br>Amazon Ads Command Center</div>
             <div class="brand-subtitle">
-                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control
+                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • AI review
             </div>
         </div>
         """,
@@ -425,7 +622,7 @@ with r1c1:
 
 with r1c2:
     min_clicks = st.number_input(
-        "Minimum Clicks Before Efficiency Actions",
+        "Minimum Clicks Before Standard Efficiency Actions",
         min_value=1,
         max_value=100,
         value=8,
@@ -795,12 +992,34 @@ if diagnostics is not None:
 
     with pr6:
         render_metric_card("Budget Decreases", str(get_int(preview.get("budget_decreases"))), tone="warn")
-        
+
     with st.expander("Campaign Health Table", expanded=False):
         if not campaign_health_dashboard.empty:
             st.dataframe(campaign_health_dashboard, use_container_width=True)
         else:
             st.info("No campaign health table available.")
+
+    if enable_ai_review:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        try:
+            ai_review = get_ai_decision_review(
+                account_health=account_health,
+                account_summary=account_summary,
+                preview=preview,
+                campaign_health_dashboard=campaign_health_dashboard,
+                smart_warnings=smart_warnings,
+                optimization_suggestions=optimization_suggestions,
+                model=ai_model,
+            )
+            st.session_state["last_ai_review"] = ai_review
+
+            render_ai_review_block(
+                title="AI Decision Review",
+                note="AI reviews the rule-based recommendations and highlights priorities, risks, and scale opportunities.",
+                ai_review=ai_review,
+            )
+        except Exception as e:
+            st.error(f"AI review failed: {e}")
 
 
 # =========================================================
@@ -848,6 +1067,9 @@ if enable_monthly_budget_control and monthly_account_budget > 0:
         "- Monthly budget control is enabled. If current pacing exceeds the allowed pace for the month, the app will block budget increases and block bid increases."
     )
 
+if enable_ai_review and advisory_only:
+    st.markdown("- AI review is enabled in **advisory only** mode. It will not directly change bids or exported bulk actions.")
+
 
 # =========================================================
 # Run optimizer
@@ -885,6 +1107,10 @@ if "last_outputs" in st.session_state:
     output_account_health = safe_dict(outputs.get("account_health"))
     simulation_summary = safe_dict(outputs.get("simulation_summary"))
     run_history = safe_df(outputs.get("run_history"))
+    output_campaign_health_dashboard = safe_df(outputs.get("campaign_health_dashboard"))
+    output_smart_warnings = safe_list(outputs.get("smart_warnings"))
+    output_optimization_suggestions = safe_list(outputs.get("optimization_suggestions"))
+    output_account_summary = safe_dict(outputs.get("account_summary"))
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -955,6 +1181,27 @@ if "last_outputs" in st.session_state:
 
     for point in narrative_points:
         st.markdown(f"- {point}")
+
+    if enable_ai_review:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        try:
+            ai_post_review = get_ai_decision_review(
+                account_health=output_account_health,
+                account_summary=output_account_summary,
+                preview=simulation_summary,
+                campaign_health_dashboard=output_campaign_health_dashboard,
+                smart_warnings=output_smart_warnings,
+                optimization_suggestions=output_optimization_suggestions,
+                model=ai_model,
+            )
+
+            render_ai_review_block(
+                title="AI Post-Run Review",
+                note="AI reviews the generated optimization output before export.",
+                ai_review=ai_post_review,
+            )
+        except Exception as e:
+            st.error(f"AI post-run review failed: {e}")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
