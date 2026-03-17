@@ -374,7 +374,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("**Version:** 1.0")
+    st.markdown("**Version:** 1.1")
     st.markdown("**Owner:** Jake Yorgason, Evolved Commerce")
 
 
