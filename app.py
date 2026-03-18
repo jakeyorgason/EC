@@ -62,6 +62,9 @@ def get_uploaded_bytes(file_obj):
     if file_obj is None:
         return None
     return file_obj.getvalue()
+    if not all([bulk_file, search_file, targeting_file, impression_file]):
+        st.warning("Please upload all required files before running optimization.")
+        st.stop()
 
 
 def bytes_to_buffer(file_bytes):
