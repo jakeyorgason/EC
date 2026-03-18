@@ -62,9 +62,6 @@ def get_uploaded_bytes(file_obj):
     if file_obj is None:
         return None
     return file_obj.getvalue()
-    if not all([bulk_file, search_file, targeting_file, impression_file]):
-        st.warning("Please upload all required files before running optimization.")
-        st.stop()
 
 
 def bytes_to_buffer(file_bytes):
@@ -1139,24 +1136,22 @@ st.markdown(
 up1, up2 = st.columns(2)
 
 with up1:
-    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"],
-    help="Amazon Ads > Campaigns > Bulk Operations. Set Date Range, Create spreadsheet"),
+    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"])
     upload_status_line(bulk_file, "Bulk Sheet uploaded")
 
-    search_file = st.file_uploader("Search Term Report", type=["xlsx"], help="Amazon Ads > Measurement and Reporting > Sponsored Ads Report")
+    search_file = st.file_uploader("Search Term Report", type=["xlsx"])
     upload_status_line(search_file, "Search Term Report uploaded")
 
-    targeting_file = st.file_uploader("Targeting Report", type=["xlsx"], help="Amazon Ads > Measurement and Reporting > Sponsored Ads Reports")
+    targeting_file = st.file_uploader("Targeting Report", type=["xlsx"])
     upload_status_line(targeting_file, "Targeting Report uploaded")
 
 with up2:
-    impression_file = st.file_uploader("Impression Share Report", type=["csv"], help="Amazon Ads > Measurement and Reporting > Sponsored Ads Report")
+    impression_file = st.file_uploader("Impression Share Report", type=["csv"])
     upload_status_line(impression_file, "Impression Share Report uploaded")
 
     business_file = st.file_uploader(
-        "Seller Central Business Report (only required if TACOS Control is enabled)",
+        "Sales and Traffic Business Report (only required if TACOS Control is enabled)",
         type=["xlsx", "csv"],
-        help="Seller Central > Business Reports > Sales and Traffic"
     )
     if business_file is not None:
         st.success("Seller Central Business Report uploaded")
@@ -1164,7 +1159,7 @@ with up2:
     sqp_file = st.file_uploader(
         "Search Query Performance Report (optional — prior month, Simple View only)",
         type=["csv"],
-        help="Seller Central > Brands > Brand Analytics > Search Analytics > Search Query Performance. Prior Month, Simple View",
+        help="Use the prior month's SQP report in Simple View only.",
     )
     if sqp_file is not None:
         st.success("Search Query Performance Report uploaded")
