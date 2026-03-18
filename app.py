@@ -1136,22 +1136,24 @@ st.markdown(
 up1, up2 = st.columns(2)
 
 with up1:
-    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"])
+    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"],
+    help="Amazon Ads > Campaigns > Bulk Operations. Set Date Range, Create spreadsheet"),
     upload_status_line(bulk_file, "Bulk Sheet uploaded")
 
-    search_file = st.file_uploader("Search Term Report", type=["xlsx"])
+    search_file = st.file_uploader("Search Term Report", type=["xlsx"], help="Amazon Ads > Measurement and Reporting > Sponsored Ads Report")
     upload_status_line(search_file, "Search Term Report uploaded")
 
-    targeting_file = st.file_uploader("Targeting Report", type=["xlsx"])
+    targeting_file = st.file_uploader("Targeting Report", type=["xlsx"], help="Amazon Ads > Measurement and Reporting > Sponsored Ads Reports")
     upload_status_line(targeting_file, "Targeting Report uploaded")
 
 with up2:
-    impression_file = st.file_uploader("Impression Share Report", type=["csv"])
+    impression_file = st.file_uploader("Impression Share Report", type=["csv"], help="Amazon Ads > Measurement and Reporting > Sponsored Ads Report")
     upload_status_line(impression_file, "Impression Share Report uploaded")
 
     business_file = st.file_uploader(
-        "Sales and Traffic Business Report (only required if TACOS Control is enabled)",
+        "Seller Central Business Report (only required if TACOS Control is enabled)",
         type=["xlsx", "csv"],
+        help="Seller Central > Business Reports > Sales and Traffic"
     )
     if business_file is not None:
         st.success("Seller Central Business Report uploaded")
@@ -1159,7 +1161,7 @@ with up2:
     sqp_file = st.file_uploader(
         "Search Query Performance Report (optional — prior month, Simple View only)",
         type=["csv"],
-        help="Use the prior month's SQP report in Simple View only.",
+        help="Seller Central > Brands > Brand Analytics > Search Analytics > Search Query Performance. Prior Month, Simple View",
     )
     if sqp_file is not None:
         st.success("Search Query Performance Report uploaded")
