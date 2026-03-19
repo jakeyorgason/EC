@@ -1338,6 +1338,8 @@ if diagnostics is not None:
     with pr6:
         render_metric_card("Budget Decreases", str(get_int(preview.get("budget_decreases"))), tone="warn")
 
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    
     with st.expander("Campaign Health Table", expanded=False):
         if not campaign_health_dashboard.empty:
             st.dataframe(campaign_health_dashboard, use_container_width=True)
