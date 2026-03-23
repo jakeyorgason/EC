@@ -516,7 +516,7 @@ class SalesAuditEngine:
         grouped = grouped.sort_values(["spend", "sales"], ascending=[False, False]).reset_index(drop=True)
         return grouped
 
-    def build_waste_tables(self, keyword_table, search_table):
+    def build_waste_tables(self, keyword_table, search_table, total_spend):
         kw_zero_sale = pd.DataFrame()
         kw_high_acos = pd.DataFrame()
         st_zero_sale = pd.DataFrame()
@@ -549,14 +549,16 @@ class SalesAuditEngine:
         st_zero_sale = st_zero_sale.sort_values("spend", ascending=False).reset_index(drop=True)
         st_high_acos = st_high_acos.sort_values("spend", ascending=False).reset_index(drop=True)
 
-        # IMPORTANT:
-        # Only use one source for wasted spend totals to avoid double counting.
+        # Use ONE basis only for the headline wasted spend number.
         if not st_zero_sale.empty or not st_high_acos.empty:
             wasted_spend = float(st_zero_sale["spend"].sum() + st_high_acos["spend"].sum())
             waste_basis = "search_terms"
         else:
             wasted_spend = float(kw_zero_sale["spend"].sum() + kw_high_acos["spend"].sum())
             waste_basis = "keyword_targets"
+
+        # Safety cap: headline wasted spend can never exceed total spend.
+        wasted_spend = min(wasted_spend, float(total_spend or 0))
 
         return {
             "keyword_zero_sale": kw_zero_sale,
@@ -675,7 +677,7 @@ class SalesAuditEngine:
         search_table = self.build_search_term_spend_table(search_terms)
         campaign_summary = self.build_campaign_summary(targeting)
 
-        waste_tables = self.build_waste_tables(keyword_table, search_table)
+        waste_tables = self.build_waste_tables(keyword_table, search_table, total_spend=kpis["spend"])
         waste_summary = self.build_waste_summary(waste_tables, total_spend=kpis["spend"])
 
         winner_tables = self.build_winner_tables(keyword_table, search_table)
