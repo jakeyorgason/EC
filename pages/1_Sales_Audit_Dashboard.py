@@ -141,39 +141,38 @@ st.markdown(
     """
     <style>
         .brand-shell {
-            background: linear-gradient(135deg, #ffffff 0%, #fff8f2 100%);
-            border: 1px solid #f1e4d8;
-            border-radius: 18px;
-            padding: 18px 22px;
-            margin-bottom: 10px;
+            background: linear-gradient(135deg, #EA580C 0%, #1F2937 100%);
+            border-radius: 20px;
+            padding: 65px 30px;
+            color: white;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 12px 05px rgba(0, 0, 0, 0.12);
         }
 
         .brand-title {
-            font-size: 2rem;
+            font-size: 2.15rem;
             line-height: 1.05;
             font-weight: 800;
-            color: #1f2937;
-            margin-bottom: 0.3rem;
+            margin: 0;
         }
 
         .brand-subtitle {
-            font-size: 0.98rem;
-            color: #6b7280;
-            line-height: 1.35;
+            font-size: 1rem;
+            opacity: 0.96;
+            margin-top: 0.55rem;
         }
 
         .section-title {
-            font-size: 1.2rem;
-            font-weight: 800;
-            color: #1f2937;
-            margin-top: 0.35rem;
-            margin-bottom: 0.15rem;
+            font-size: 1.18rem;
+            font-weight: 750;
+            color: #111827;
+            margin-bottom: 0.2rem;
         }
 
         .section-note {
-            font-size: 0.92rem;
-            color: #6b7280;
-            margin-bottom: 0.8rem;
+            font-size: 0.94rem;
+            color: #4B5563;
+            margin-bottom: 0.9rem;
         }
 
         .metric-card {
