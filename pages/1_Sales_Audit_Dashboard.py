@@ -342,7 +342,11 @@ with header_right:
         """,
         unsafe_allow_html=True,
     )
-
+brand_name = st.text_input(
+    "Brand Name",
+    placeholder="Brand Name",
+    key="sales_audit_brand_name",
+)
 
 # =========================================================
 # SETTINGS
