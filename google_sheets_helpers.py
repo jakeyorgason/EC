@@ -43,6 +43,22 @@ def get_drive_service():
     creds = get_google_credentials()
     return build("drive", "v3", credentials=creds)
 
+def test_google_drive_access():
+    drive_service = get_drive_service()
+    folder_id = get_audit_folder_id()
+
+    folder = drive_service.files().get(
+        fileId=folder_id,
+        fields="id,name,mimeType",
+        supportsAllDrives=True,
+    ).execute()
+
+    return {
+        "id": folder.get("id"),
+        "name": folder.get("name"),
+        "mimeType": folder.get("mimeType"),
+    }
+
 
 def get_audit_folder_id():
     return st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
