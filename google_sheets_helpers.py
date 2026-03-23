@@ -62,3 +62,25 @@ def test_google_drive_access():
 
 def get_audit_folder_id():
     return st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
+
+def create_test_google_sheet(sheet_name: str):
+    drive_service = get_drive_service()
+    folder_id = get_audit_folder_id()
+
+    file_metadata = {
+        "name": sheet_name,
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [folder_id],
+    }
+
+    created_file = drive_service.files().create(
+        body=file_metadata,
+        fields="id,name,webViewLink",
+        supportsAllDrives=True,
+    ).execute()
+
+    return {
+        "id": created_file.get("id"),
+        "name": created_file.get("name"),
+        "url": created_file.get("webViewLink"),
+    }
