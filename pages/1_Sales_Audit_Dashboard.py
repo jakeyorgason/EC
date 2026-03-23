@@ -8,6 +8,7 @@ from sales_audit_ingestion import SalesAuditEngine
 from shared_ingestion_utils import to_excel_bytes_multi
 
 from google_sheets_helpers import test_google_drive_access
+from google_sheets_helpers import test_google_drive_access, create_test_google_sheet
 
 st.set_page_config(
     page_title="Sales Audit | Amazon Ads Command Center",
@@ -357,6 +358,21 @@ with st.expander("Google Drive Connection Test", expanded=False):
             st.write(folder_info)
         except Exception as exc:
             st.error(f"Google Drive test failed: {exc}")
+
+test_sheet_name = st.text_input(
+    "Test Google Sheet Name",
+    value="Sales Audit Test Sheet",
+    key="sales_audit_test_sheet_name",
+)
+
+if st.button("Create Test Google Sheet", use_container_width=True):
+    try:
+        created_sheet = create_test_google_sheet(test_sheet_name)
+        st.success(f"Created Google Sheet: {created_sheet['name']}")
+        st.markdown(f"[Open Google Sheet]({created_sheet['url']})")
+        st.write(created_sheet)
+    except Exception as exc:
+        st.error(f"Google Sheet creation failed: {exc}")
 
 # =========================================================
 # SETTINGS
