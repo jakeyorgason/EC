@@ -140,6 +140,13 @@ def simplify_campaign_table(df: pd.DataFrame) -> pd.DataFrame:
 st.markdown(
     """
     <style>
+
+        .block-container {
+            padding-top: 1.1rem;
+            padding-bottom: 1.75rem;
+            max-width: 1440px;
+        }
+        
         .brand-shell {
             background: linear-gradient(135deg, #EA580C 0%, #1F2937 100%);
             border-radius: 20px;
