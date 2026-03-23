@@ -486,6 +486,7 @@ if run_clicked:
             )
 
             results = engine.process()
+            results["brand_name"] = (brand_name or "").strip()
             st.session_state["sales_audit_results"] = results
             st.success("Sales audit complete.")
 
@@ -493,6 +494,7 @@ if run_clicked:
             st.error(f"Sales audit failed: {exc}")
 
 results = safe_dict(st.session_state.get("sales_audit_results", {}))
+brand_name = str(results.get("brand_name", "")).strip()
 
 if results:
     kpis = safe_dict(results.get("kpi_summary"))
@@ -520,6 +522,9 @@ if results:
     # =========================================================
     # HEALTH SUMMARY
     # =========================================================
+    if brand_name:
+        st.markdown(f"### {brand_name} Sales Audit")
+
     st.markdown('<div class="section-title">Account Health Verdict</div>', unsafe_allow_html=True)
 
     status = health_summary.get("status", "Unknown")
