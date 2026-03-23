@@ -336,7 +336,7 @@ with header_right:
         <div class="brand-shell">
             <div class="brand-title">Evolved Commerce<br>Sales Audit Dashboard</div>
             <div class="brand-subtitle">
-                Fast diagnostic view for Amazon Ads account health, efficiency, waste, spend concentration, and winning keyword signals.
+                Ads Health • Effeciency Diagnosis • Waste Identification • Spend Allocation • Keyword Analysis
             </div>
         </div>
         """,
