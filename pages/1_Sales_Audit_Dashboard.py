@@ -696,7 +696,7 @@ if results:
     st.download_button(
         label="Download Sales Audit Workbook",
         data=export_bytes,
-        file_name="sales_audit_workbook.xlsx",
+        file_name=f"{brand_name or 'sales_audit'}_audit_workbook.xlsx".replace(" ", "_"),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
