@@ -9,9 +9,6 @@ from shared_ingestion_utils import to_excel_bytes_multi
 
 from apps_script_helpers import create_google_sheet_from_template
 
-from google_sheets_helpers import test_google_drive_access
-from google_sheets_helpers import test_google_drive_access, create_test_google_sheet
-
 st.set_page_config(
     page_title="Sales Audit | Amazon Ads Command Center",
     page_icon="📊",
@@ -372,7 +369,6 @@ if st.button("Create Test Report via Apps Script", use_container_width=True):
         created_report = create_google_sheet_from_template(test_report_name)
         st.success(f"Created report: {created_report['name']}")
         st.markdown(f"[Open Google Sheet]({created_report['url']})")
-        st.write(created_report)
     except Exception as exc:
         st.error(f"Apps Script report creation failed: {exc}")
 
@@ -381,15 +377,6 @@ test_sheet_name = st.text_input(
     value="Sales Audit Test Sheet",
     key="sales_audit_test_sheet_name",
 )
-
-if st.button("Create Test Google Sheet", use_container_width=True):
-    try:
-        created_sheet = create_test_google_sheet(test_sheet_name)
-        st.success(f"Created Google Sheet: {created_sheet['name']}")
-        st.markdown(f"[Open Google Sheet]({created_sheet['url']})")
-        st.write(created_sheet)
-    except Exception as exc:
-        st.error(f"Google Sheet creation failed: {exc}")
 
 # =========================================================
 # SETTINGS
