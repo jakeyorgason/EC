@@ -7,6 +7,8 @@ import streamlit as st
 from sales_audit_ingestion import SalesAuditEngine
 from shared_ingestion_utils import to_excel_bytes_multi
 
+from apps_script_helpers import create_google_sheet_from_template
+
 from google_sheets_helpers import test_google_drive_access
 from google_sheets_helpers import test_google_drive_access, create_test_google_sheet
 
@@ -358,6 +360,21 @@ with st.expander("Google Drive Connection Test", expanded=False):
             st.write(folder_info)
         except Exception as exc:
             st.error(f"Google Drive test failed: {exc}")
+
+test_report_name = st.text_input(
+    "Test Report Name",
+    value="Sales Audit Test Report",
+    key="sales_audit_test_report_name",
+)
+
+if st.button("Create Test Report via Apps Script", use_container_width=True):
+    try:
+        created_report = create_google_sheet_from_template(test_report_name)
+        st.success(f"Created report: {created_report['name']}")
+        st.markdown(f"[Open Google Sheet]({created_report['url']})")
+        st.write(created_report)
+    except Exception as exc:
+        st.error(f"Apps Script report creation failed: {exc}")
 
 test_sheet_name = st.text_input(
     "Test Google Sheet Name",
