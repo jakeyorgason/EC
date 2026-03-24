@@ -358,7 +358,7 @@ test_report_name = st.text_input(
 if st.button("Create Test Report via Apps Script", use_container_width=True):
     try:
         created_report = create_google_sheet_from_template(test_report_name)
-        st.success(f"Created report: {created_report['name']}")
+        st.success(f"Branded Sales Audit Report Created: {created_report['name']}")
         st.markdown(f"[Open Google Sheet]({created_report['url']})")
     except Exception as exc:
         st.error(f"Apps Script report creation failed: {exc}")
