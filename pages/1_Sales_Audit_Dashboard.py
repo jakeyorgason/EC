@@ -349,15 +349,6 @@ brand_name = st.text_input(
     key="sales_audit_brand_name",
 )
 
-with st.expander("Google Drive Connection Test", expanded=False):
-    if st.button("Test Google Drive Access", use_container_width=True):
-        try:
-            folder_info = test_google_drive_access()
-            st.success(f"Connected. Found folder: {folder_info['name']}")
-            st.write(folder_info)
-        except Exception as exc:
-            st.error(f"Google Drive test failed: {exc}")
-
 test_report_name = st.text_input(
     "Test Report Name",
     value="Sales Audit Test Report",
