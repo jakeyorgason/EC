@@ -525,6 +525,11 @@ if results:
         else:
             st.write("No search_terms match_type column found.")
 
+    with st.expander("Built Match Type Rows Debug", expanded=False):
+        st.write("results keys:", list(results.keys()))
+        st.write("match_type_revenue_rows:", results.get("match_type_revenue_rows"))
+        st.write("match_type_inefficient_rows:", results.get("match_type_inefficient_rows"))
+
     kw_zero = simplify_term_table(safe_df(waste_tables.get("keyword_zero_sale")), "target")
     kw_high = simplify_term_table(safe_df(waste_tables.get("keyword_high_acos")), "target")
     st_zero = simplify_term_table(safe_df(waste_tables.get("search_zero_sale")), "customer_search_term")
