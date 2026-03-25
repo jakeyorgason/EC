@@ -730,6 +730,34 @@ class SalesAuditEngine:
         })
         return rows
 
+    def build_campaign_type_rows(self, targeting_df):
+        if targeting_df is None or targeting_df.empty:
+            return []
+
+        df = targeting_df.copy()
+
+        if "campaign_name" not in df.columns:
+            return []
+
+        def infer_campaign_type(name: str) -> str:
+            text = str(name).upper()
+            if "SP" in text or "SPONSORED PRODUCTS" in text:
+                return "SP"
+            if "SB" in text or "SPONSORED BRANDS" in text:
+                return "SB"
+            if "SD" in text or "SPONSORED DISPLAY" in text:
+                return "SD"
+            return "SP"
+
+        df["campaign_type"] = df["campaign_name"].map(infer_campaign_type)
+
+        grouped = (
+            df.groupby("campaign_type", as_index=False)
+            .agg(sales=("sales", "sum"))
+        )
+
+        return grouped.to_dict("records")
+
     # =========================================================
     # PROCESS
     # =========================================================
@@ -760,6 +788,8 @@ class SalesAuditEngine:
         health_summary = self.build_account_health_summary(kpis, waste_summary)
         narrative = self.build_narrative(kpis, waste_summary, health_summary, winner_tables)
 
+        campaign_type_rows = self.build_campaign_type_rows(targeting)
+
         return {
             "bulk_targets": bulk_targets,
             "targeting": targeting,
@@ -779,4 +809,5 @@ class SalesAuditEngine:
             "date_range_label": date_range_label,
             "match_type_revenue_rows": match_type_revenue_rows,
             "match_type_inefficient_rows": match_type_inefficient_rows,
+            "campaign_type_rows": campaign_type_rows,
         }
