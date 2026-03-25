@@ -261,6 +261,20 @@ def create_google_sheet_report(
 st.markdown(
     """
     <style>
+        .main > div {
+            padding-top: 1.1rem;
+        }
+
+        .block-container {
+            padding-top: 1.1rem;
+            padding-bottom: 1.75rem;
+            max-width: 1440px;
+        }
+
+        [data-testid="stSidebar"] {
+            background: #F3F4F6;
+        }
+
         .brand-shell {
             background: linear-gradient(135deg, #EA580C 0%, #1F2937 100%);
             border-radius: 20px;
@@ -271,25 +285,23 @@ st.markdown(
         }
 
         .brand-title {
-            font-size: 2rem;
-            line-height: 1.05;
+            font-size: 2.15rem;
             font-weight: 800;
-            color: #1f2937;
-            margin-bottom: 0.3rem;
+            line-height: 1.05;
+            margin: 0;
         }
 
         .brand-subtitle {
-            font-size: 0.98rem;
-            color: #6b7280;
-            line-height: 1.35;
+            font-size: 1rem;
+            opacity: 0.96;
+            margin-top: 0.55rem;
         }
 
         .section-title {
-            font-size: 1.2rem;
-            font-weight: 800;
-            color: #1f2937;
-            margin-top: 0.35rem;
-            margin-bottom: 0.15rem;
+            font-size: 1.18rem;
+            font-weight: 750;
+            color: #111827;
+            margin-bottom: 0.2rem;
         }
 
         .section-note {
