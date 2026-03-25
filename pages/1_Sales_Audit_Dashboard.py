@@ -383,7 +383,7 @@ with s2:
         "Winner ACOS Threshold %",
         min_value=1.0,
         max_value=100.0,
-        value=25.0,
+        value=15.0,
         step=1.0,
     )
 
@@ -392,7 +392,7 @@ with s3:
         "Minimum Spend to Flag Waste",
         min_value=0.0,
         max_value=1000.0,
-        value=20.0,
+        value=0.0,
         step=5.0,
     )
 
@@ -401,7 +401,7 @@ with s4:
         "Minimum Orders for Winner",
         min_value=1,
         max_value=50,
-        value=2,
+        value=1,
         step=1,
     )
 
