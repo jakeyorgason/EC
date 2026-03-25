@@ -555,11 +555,6 @@ if results:
                     waste_summary=waste_summary,
                     match_type_revenue_rows=results.get("match_type_revenue_rows", []),
                     match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
-                    top_spenders=df_to_records(top_kw),
-                    waste_rows=df_to_records(waste_kw_combined),
-                    winner_rows=df_to_records(winner_combined),
-                    targeting_rows=df_to_records(safe_df(results.get("targeting"))),
-                    search_term_rows=df_to_records(safe_df(results.get("search_terms"))),
                 )
 
                 st.success("Branded Google Sheet report created successfully.")
