@@ -261,12 +261,13 @@ def create_google_sheet_report(
 st.markdown(
     """
     <style>
-        .brand-shell {
-            background: linear-gradient(135deg, #ffffff 0%, #fff8f2 100%);
-            border: 1px solid #f1e4d8;
-            border-radius: 18px;
-            padding: 18px 22px;
-            margin-bottom: 10px;
+        brand-shell {
+            background: linear-gradient(135deg, #EA580C 0%, #1F2937 100%);
+            border-radius: 20px;
+            padding: 65px 30px;
+            color: white;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
         }
 
         .brand-title {
