@@ -402,8 +402,8 @@ class SalesAuditEngine:
             if "ntb_orders" in sb_campaign_df.columns:
                 ntb_orders = float(pd.to_numeric(sb_campaign_df["ntb_orders"], errors="coerce").fillna(0).sum())
 
-ntb_sales_pct = float(ntb_sales / ad_sales * 100) if ad_sales > 0 else 0.0
-ntb_orders_pct = float(ntb_orders / units_ordered * 100) if units_ordered > 0 else 0.0
+        ntb_sales_pct = float(ntb_sales / ad_sales * 100) if ad_sales > 0 else 0.0
+        ntb_orders_pct = float(ntb_orders / units_ordered * 100) if units_ordered > 0 else 0.0
 
         return {
             "spend": round(spend, 2),
