@@ -516,6 +516,10 @@ if results:
     waste_tables = safe_dict(results.get("waste_tables"))
     winner_tables = safe_dict(results.get("winner_tables"))
     narrative = str(results.get("narrative", "")).strip()
+    
+    with st.expander("Match Type Debug", expanded=False):
+    st.write("Revenue rows:", results.get("match_type_revenue_rows", []))
+    st.write("Inefficient rows:", results.get("match_type_inefficient_rows", []))
 
     kw_zero = simplify_term_table(safe_df(waste_tables.get("keyword_zero_sale")), "target")
     kw_high = simplify_term_table(safe_df(waste_tables.get("keyword_high_acos")), "target")
