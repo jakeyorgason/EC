@@ -85,6 +85,28 @@ class SalesAuditEngine:
         }]
 
 
+    def build_date_range_label(self, targeting_df, search_df, business_df):
+        date_values = []
+
+        for df in [targeting_df, search_df, business_df]:
+            if df is None or df.empty:
+                continue
+
+            for col in ["Start Date", "End Date", "date", "Date", "Day", "Report Date"]:
+                if col in df.columns:
+                    parsed = pd.to_datetime(df[col], errors="coerce")
+                    parsed = parsed.dropna()
+                    if not parsed.empty:
+                        date_values.extend(parsed.tolist())
+
+        if not date_values:
+            return ""
+
+        start_date = min(date_values)
+        end_date = max(date_values)
+
+        return f"{start_date:%m/%d} - {end_date:%m/%d}"
+    
     def build_match_type_inefficient_rows(self, keyword_table):
         if keyword_table is None or keyword_table.empty:
             return []
@@ -551,6 +573,7 @@ class SalesAuditEngine:
         keyword_table = self.build_keyword_spend_table(targeting)
         search_table = self.build_search_term_spend_table(search_terms)
         campaign_summary = self.build_campaign_summary(targeting)
+        date_range_label = self.build_date_range_label(targeting, search_terms, business)
         match_type_revenue_rows = self.build_match_type_revenue_rows(targeting)
         match_type_inefficient_rows = self.build_match_type_inefficient_rows(keyword_table)
 
@@ -579,6 +602,7 @@ class SalesAuditEngine:
             "narrative": narrative,
             "match_type_revenue_rows": match_type_revenue_rows,
             "match_type_inefficient_rows": match_type_inefficient_rows,
+            "date_range_label": date_range_label,
         }
 
     def build_search_term_spend_table(self, search_df):
