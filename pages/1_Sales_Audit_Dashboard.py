@@ -358,12 +358,6 @@ brand_name = st.text_input(
     key="sales_audit_brand_name",
 )
 
-test_sheet_name = st.text_input(
-    "Test Google Sheet Name",
-    value="Sales Audit Test Sheet",
-    key="sales_audit_test_sheet_name",
-)
-
 # =========================================================
 # SETTINGS
 # =========================================================
