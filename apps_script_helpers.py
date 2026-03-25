@@ -5,6 +5,7 @@ import streamlit as st
 def create_google_sheet_report(
     brand_name: str,
     report_name: str,
+    date_range_label: str,
     kpi_summary: dict,
     waste_summary: dict,
     match_type_revenue_rows: list[dict],
@@ -19,6 +20,7 @@ def create_google_sheet_report(
         "destinationFolderId": destination_folder_id,
         "reportName": report_name,
         "brandName": brand_name,
+        "dateRangeLabel": date_range_label,
         "kpiSummary": kpi_summary,
         "wasteSummary": waste_summary,
         "matchTypeRevenueRows": match_type_revenue_rows,
