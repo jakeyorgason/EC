@@ -616,19 +616,58 @@ class SalesAuditEngine:
         end_date = max(date_values)
         return f"{start_date:%m/%d} - {end_date:%m/%d}"
 
-    def build_match_type_revenue_rows(self, search_df):
-        if search_df is None or search_df.empty or "match_type" not in search_df.columns:
+    def is_branded_term(self, term: str, brand_name: str) -> bool:
+        term_text = str(term or "").strip().lower()
+        brand_text = str(brand_name or "").strip().lower()
+
+        if not term_text or not brand_text:
+            return False
+
+        return brand_text in term_text
+    
+    def build_match_type_revenue_rows(self, search_df, brand_name: str):
+        if search_df is None or search_df.empty:
             return []
 
         df = search_df.copy()
-        df["match_type"] = df["match_type"].fillna("").astype(str).str.upper().str.strip()
 
-        base = df[df["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
-        if base.empty:
-            return []
+        if "match_type" not in df.columns:
+            df["match_type"] = ""
 
+        if "customer_search_term" not in df.columns:
+            df["customer_search_term"] = ""
+
+        df["match_type"] = (
+            df["match_type"]
+            .fillna("")
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        df["customer_search_term"] = (
+            df["customer_search_term"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+    
+        def bucket_row(row):
+            term = row["customer_search_term"]
+            match_type = row["match_type"]
+    
+            if self.is_branded_term(term, brand_name):
+                return "Branded KW"
+            if match_type == "EXACT":
+                return "EXACT"
+            if match_type == "PHRASE":
+                return "PHRASE"
+            return "AUTO"
+    
+        df["match_bucket"] = df.apply(bucket_row, axis=1)
+    
         grouped = (
-            base.groupby("match_type", as_index=False)
+            df.groupby("match_bucket", as_index=False)
             .agg(
                 impressions=("impressions", "sum"),
                 clicks=("clicks", "sum"),
@@ -636,35 +675,80 @@ class SalesAuditEngine:
                 sales=("sales", "sum"),
             )
         )
-
-        rows = grouped.to_dict("records")
-        rows.append({
-            "match_type": "Branded KW",
-            "impressions": 0,
-            "clicks": 0,
-            "spend": 0,
-            "sales": 0,
-        })
+    
+        row_order = ["AUTO", "BROAD", "EXACT", "PHRASE", "Branded KW"]
+        row_map = {row["match_bucket"]: row for _, row in grouped.iterrows()}
+    
+        rows = []
+        for label in row_order:
+            row = row_map.get(label)
+            if row is None:
+                rows.append({
+                    "match_type": label,
+                    "impressions": 0,
+                    "clicks": 0,
+                    "spend": 0,
+                    "sales": 0,
+                })
+            else:
+                rows.append({
+                    "match_type": label,
+                    "impressions": float(row["impressions"]),
+                    "clicks": float(row["clicks"]),
+                    "spend": float(row["spend"]),
+                    "sales": float(row["sales"]),
+                })
+    
         return rows
 
-    def build_match_type_inefficient_rows(self, search_df):
-        if search_df is None or search_df.empty or "match_type" not in search_df.columns:
+    def build_match_type_inefficient_rows(self, search_df, brand_name: str):
+        if search_df is None or search_df.empty:
             return []
-
+    
         df = search_df.copy()
-        df["match_type"] = df["match_type"].fillna("").astype(str).str.upper().str.strip()
-
+    
+        if "match_type" not in df.columns:
+            df["match_type"] = ""
+    
+        if "customer_search_term" not in df.columns:
+            df["customer_search_term"] = ""
+    
+        df["match_type"] = (
+            df["match_type"]
+            .fillna("")
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+    
+        df["customer_search_term"] = (
+            df["customer_search_term"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+    
         inefficient = df[
             (df["spend"] >= self.min_waste_spend)
             & ((df["sales"] <= 0) | (df["acos"] > self.high_acos_threshold))
         ].copy()
-
-        inefficient = inefficient[inefficient["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
-        if inefficient.empty:
-            return []
-
+    
+        def bucket_row(row):
+            term = row["customer_search_term"]
+            match_type = row["match_type"]
+    
+            if self.is_branded_term(term, brand_name):
+                return "Branded KW"
+            if match_type == "EXACT":
+                return "EXACT"
+            if match_type == "PHRASE":
+                return "PHRASE"
+            return "AUTO"
+    
+        inefficient["match_bucket"] = inefficient.apply(bucket_row, axis=1)
+    
         grouped = (
-            inefficient.groupby("match_type", as_index=False)
+            inefficient.groupby("match_bucket", as_index=False)
             .agg(
                 impressions=("impressions", "sum"),
                 clicks=("clicks", "sum"),
@@ -672,15 +756,30 @@ class SalesAuditEngine:
                 sales=("sales", "sum"),
             )
         )
-
-        rows = grouped.to_dict("records")
-        rows.append({
-            "match_type": "Branded KW",
-            "impressions": 0,
-            "clicks": 0,
-            "spend": 0,
-            "sales": 0,
-        })
+    
+        row_order = ["AUTO", "BROAD", "EXACT", "PHRASE", "Branded KW"]
+        row_map = {row["match_bucket"]: row for _, row in grouped.iterrows()}
+    
+        rows = []
+        for label in row_order:
+            row = row_map.get(label)
+            if row is None:
+                rows.append({
+                    "match_type": label,
+                    "impressions": 0,
+                    "clicks": 0,
+                    "spend": 0,
+                    "sales": 0,
+                })
+            else:
+                rows.append({
+                    "match_type": label,
+                    "impressions": float(row["impressions"]),
+                    "clicks": float(row["clicks"]),
+                    "spend": float(row["spend"]),
+                    "sales": float(row["sales"]),
+                })
+    
         return rows
 
     def build_campaign_type_rows(self, targeting_df):
@@ -743,8 +842,10 @@ class SalesAuditEngine:
         campaign_summary = self.build_campaign_summary(targeting)
         date_range_label = self.build_date_range_label(targeting, search_terms, business)
 
-        match_type_revenue_rows = self.build_match_type_revenue_rows(search_terms)
-        match_type_inefficient_rows = self.build_match_type_inefficient_rows(search_terms)
+        brand_name = getattr(self, "brand_name", "")
+
+        match_type_revenue_rows = self.build_match_type_revenue_rows(search_terms, brand_name)
+        match_type_inefficient_rows = self.build_match_type_inefficient_rows(search_terms, brand_name)
         campaign_type_rows = self.build_campaign_type_rows(targeting)
 
         waste_tables = self.build_waste_tables(keyword_table, search_table, total_spend=kpis["spend"])
