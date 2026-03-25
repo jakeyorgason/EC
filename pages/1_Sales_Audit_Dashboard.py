@@ -6,8 +6,8 @@ import streamlit as st
 
 from sales_audit_ingestion import SalesAuditEngine
 from shared_ingestion_utils import to_excel_bytes_multi
-
 from apps_script_helpers import create_google_sheet_report
+
 
 st.set_page_config(
     page_title="Sales Audit | Amazon Ads Command Center",
@@ -134,6 +134,7 @@ def simplify_campaign_table(df: pd.DataFrame) -> pd.DataFrame:
 
     return out.sort_values(["spend", "sales"], ascending=[False, False]).reset_index(drop=True)
 
+
 def df_to_records(df: pd.DataFrame) -> list[dict]:
     if df is None or df.empty:
         return []
@@ -141,7 +142,7 @@ def df_to_records(df: pd.DataFrame) -> list[dict]:
     out = df.copy()
     out = out.replace({pd.NA: None})
     out = out.where(pd.notnull(out), None)
-    return out.to_dict("records")    
+    return out.to_dict("records")
 
 
 # =========================================================
@@ -150,46 +151,40 @@ def df_to_records(df: pd.DataFrame) -> list[dict]:
 st.markdown(
     """
     <style>
-
-        .block-container {
-            padding-top: 1.1rem;
-            padding-bottom: 1.75rem;
-            max-width: 1440px;
-        }
-        
         .brand-shell {
-            background: linear-gradient(135deg, #EA580C 0%, #1F2937 100%);
-            border-radius: 20px;
-            padding: 65px 30px;
-            color: white;
-            margin-bottom: 1.25rem;
-            box-shadow: 0 12px 05px rgba(0, 0, 0, 0.12);
+            background: linear-gradient(135deg, #ffffff 0%, #fff8f2 100%);
+            border: 1px solid #f1e4d8;
+            border-radius: 18px;
+            padding: 18px 22px;
+            margin-bottom: 10px;
         }
 
         .brand-title {
-            font-size: 2.15rem;
+            font-size: 2rem;
             line-height: 1.05;
             font-weight: 800;
-            margin: 0;
+            color: #1f2937;
+            margin-bottom: 0.3rem;
         }
 
         .brand-subtitle {
-            font-size: 1rem;
-            opacity: 0.96;
-            margin-top: 0.55rem;
+            font-size: 0.98rem;
+            color: #6b7280;
+            line-height: 1.35;
         }
 
         .section-title {
-            font-size: 1.18rem;
-            font-weight: 750;
-            color: #111827;
-            margin-bottom: 0.2rem;
+            font-size: 1.2rem;
+            font-weight: 800;
+            color: #1f2937;
+            margin-top: 0.35rem;
+            margin-bottom: 0.15rem;
         }
 
         .section-note {
-            font-size: 0.94rem;
-            color: #4B5563;
-            margin-bottom: 0.9rem;
+            font-size: 0.92rem;
+            color: #6b7280;
+            margin-bottom: 0.8rem;
         }
 
         .metric-card {
@@ -346,17 +341,29 @@ with header_right:
         <div class="brand-shell">
             <div class="brand-title">Evolved Commerce<br>Sales Audit Dashboard</div>
             <div class="brand-subtitle">
-                Ads Health • Effeciency Diagnosis • Waste Identification • Spend Allocation • Keyword Analysis
+                Fast diagnostic view for Amazon Ads account health, efficiency, waste, spend concentration, and winning keyword signals.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+# =========================================================
+# BRAND DETAILS
+# =========================================================
+st.markdown('<div class="section-title">Brand Details</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-note">Enter the brand name for the audit report.</div>',
+    unsafe_allow_html=True,
+)
+
 brand_name = st.text_input(
     "Brand Name",
-    placeholder="Brand Name",
+    placeholder="Anchor Strap Co",
     key="sales_audit_brand_name",
 )
+
 
 # =========================================================
 # SETTINGS
@@ -383,7 +390,7 @@ with s2:
         "Winner ACOS Threshold %",
         min_value=1.0,
         max_value=100.0,
-        value=15.0,
+        value=25.0,
         step=1.0,
     )
 
@@ -392,7 +399,7 @@ with s3:
         "Minimum Spend to Flag Waste",
         min_value=0.0,
         max_value=1000.0,
-        value=0.0,
+        value=20.0,
         step=5.0,
     )
 
@@ -401,7 +408,7 @@ with s4:
         "Minimum Orders for Winner",
         min_value=1,
         max_value=50,
-        value=1,
+        value=2,
         step=1,
     )
 
@@ -517,19 +524,6 @@ if results:
     winner_tables = safe_dict(results.get("winner_tables"))
     narrative = str(results.get("narrative", "")).strip()
 
-    with st.expander("Match Type Source Debug", expanded=False):
-        search_terms_df = safe_df(results.get("search_terms"))
-        if not search_terms_df.empty and "match_type" in search_terms_df.columns:
-            st.write("Unique search-term match types:", sorted(search_terms_df["match_type"].dropna().astype(str).unique().tolist()))
-            st.write(search_terms_df[["match_type", "impressions", "clicks", "spend", "sales"]].head(20))
-        else:
-            st.write("No search_terms match_type column found.")
-
-    with st.expander("Built Match Type Rows Debug", expanded=False):
-        st.write("results keys:", list(results.keys()))
-        st.write("match_type_revenue_rows:", results.get("match_type_revenue_rows"))
-        st.write("match_type_inefficient_rows:", results.get("match_type_inefficient_rows"))
-
     kw_zero = simplify_term_table(safe_df(waste_tables.get("keyword_zero_sale")), "target")
     kw_high = simplify_term_table(safe_df(waste_tables.get("keyword_high_acos")), "target")
     st_zero = simplify_term_table(safe_df(waste_tables.get("search_zero_sale")), "customer_search_term")
@@ -542,48 +536,12 @@ if results:
     top_st = simplify_term_table(search_term_spend_table, "customer_search_term").head(20)
     campaign_view = simplify_campaign_table(campaign_summary).head(20)
 
-    st.markdown('<div class="section-title">Create Branded Google Sheet Report</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-note">Creates a branded Google Sheets audit report in your Sales Audits folder.</div>',
-    unsafe_allow_html=True,)
-
-    report_name_default = f"{brand_name} - Sales Audit" if brand_name else "Sales Audit Report"
-    report_name = st.text_input(
-        "Google Sheet Report Name",
-        value=report_name_default,
-        key="sales_audit_google_sheet_report_name",
-    )
-
-    if st.button("Create Branded Google Sheet Report", use_container_width=True):
-        try:
-            if not brand_name:
-                st.error("Please enter a Brand Name before creating the Google Sheet report.")
-            else:
-                waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
-                winner_combined = pd.concat([kw_winners, st_winners], ignore_index=True).drop_duplicates()
-
-                date_range_label = "MM/DD - MM/DD"
-
-                created_report = create_google_sheet_report(
-                    brand_name=brand_name,
-                    report_name=report_name,
-                    date_range_label=date_range_label,
-                    kpi_summary=kpis,
-                    waste_summary=waste_summary,
-                    match_type_revenue_rows=results.get("match_type_revenue_rows", []),
-                    match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
-                )
-
-                st.success("Branded Google Sheet report created successfully.")
-                st.markdown(f"[Open Google Sheet]({created_report['url']})")
-        except Exception as exc:
-            st.error(f"Google Sheet report creation failed: {exc}")
+    if brand_name:
+        st.markdown(f"### {brand_name} Sales Audit")
 
     # =========================================================
     # HEALTH SUMMARY
     # =========================================================
-    if brand_name:
-        st.markdown(f"### {brand_name} Sales Audit")
-
     st.markdown('<div class="section-title">Account Health Verdict</div>', unsafe_allow_html=True)
 
     status = health_summary.get("status", "Unknown")
@@ -732,6 +690,44 @@ if results:
             st.dataframe(campaign_view, use_container_width=True)
         else:
             st.info("No campaign summary available.")
+
+    # =========================================================
+    # GOOGLE SHEET REPORT
+    # =========================================================
+    st.markdown('<div class="section-title">Create Branded Google Sheet Report</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">Creates a branded Google Sheets audit report in your Sales Audits folder.</div>',
+        unsafe_allow_html=True,
+    )
+
+    report_name_default = f"{brand_name} - Sales Audit" if brand_name else "Sales Audit Report"
+    report_name = st.text_input(
+        "Google Sheet Report Name",
+        value=report_name_default,
+        key="sales_audit_google_sheet_report_name",
+    )
+
+    if st.button("Create Branded Google Sheet Report", use_container_width=True):
+        try:
+            if not brand_name:
+                st.error("Please enter a Brand Name before creating the Google Sheet report.")
+            else:
+                date_range_label = (results.get("date_range_label") or "").strip() or "MM/DD - MM/DD"
+
+                created_report = create_google_sheet_report(
+                    brand_name=brand_name,
+                    report_name=report_name,
+                    date_range_label=date_range_label,
+                    kpi_summary=kpis,
+                    waste_summary=waste_summary,
+                    match_type_revenue_rows=results.get("match_type_revenue_rows", []),
+                    match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
+                )
+
+                st.success("Branded Google Sheet report created successfully.")
+                st.markdown(f"[Open Google Sheet]({created_report['url']})")
+        except Exception as exc:
+            st.error(f"Google Sheet report creation failed: {exc}")
 
     # =========================================================
     # EXPORTS
