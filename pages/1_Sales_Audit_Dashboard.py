@@ -7,7 +7,7 @@ import streamlit as st
 from sales_audit_ingestion import SalesAuditEngine
 from shared_ingestion_utils import to_excel_bytes_multi
 
-from apps_script_helpers import create_google_sheet_from_template
+from apps_script_helpers import create_google_sheet_report
 
 st.set_page_config(
     page_title="Sales Audit | Amazon Ads Command Center",
@@ -133,6 +133,15 @@ def simplify_campaign_table(df: pd.DataFrame) -> pd.DataFrame:
         out["acos_pct"] = pd.to_numeric(out["acos_pct"], errors="coerce").fillna(0).round(2)
 
     return out.sort_values(["spend", "sales"], ascending=[False, False]).reset_index(drop=True)
+
+def df_to_records(df: pd.DataFrame) -> list[dict]:
+    if df is None or df.empty:
+        return []
+
+    out = df.copy()
+    out = out.replace({pd.NA: None})
+    out = out.where(pd.notnull(out), None)
+    return out.to_dict("records")    
 
 
 # =========================================================
@@ -349,20 +358,6 @@ brand_name = st.text_input(
     key="sales_audit_brand_name",
 )
 
-test_report_name = st.text_input(
-    "Test Report Name",
-    value="Sales Audit Test Report",
-    key="sales_audit_test_report_name",
-)
-
-if st.button("Create Test Report via Apps Script", use_container_width=True):
-    try:
-        created_report = create_google_sheet_from_template(test_report_name)
-        st.success(f"Branded Sales Audit Report Created: {created_report['name']}")
-        st.markdown(f"[Open Google Sheet]({created_report['url']})")
-    except Exception as exc:
-        st.error(f"Apps Script report creation failed: {exc}")
-
 test_sheet_name = st.text_input(
     "Test Google Sheet Name",
     value="Sales Audit Test Sheet",
@@ -539,6 +534,44 @@ if results:
     top_kw = simplify_term_table(keyword_spend_table, "target").head(20)
     top_st = simplify_term_table(search_term_spend_table, "customer_search_term").head(20)
     campaign_view = simplify_campaign_table(campaign_summary).head(20)
+
+    st.markdown('<div class="section-title">Create Branded Google Sheet Report</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-note">Creates a branded Google Sheets audit report in your Sales Audits folder.</div>',
+    unsafe_allow_html=True,)
+
+    report_name_default = f"{brand_name} - Sales Audit" if brand_name else "Sales Audit Report"
+    report_name = st.text_input(
+        "Google Sheet Report Name",
+        value=report_name_default,
+        key="sales_audit_google_sheet_report_name",
+    )
+
+    if st.button("Create Branded Google Sheet Report", use_container_width=True):
+        try:
+            if not brand_name:
+                st.error("Please enter a Brand Name before creating the Google Sheet report.")
+            else:
+                waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
+                winner_combined = pd.concat([kw_winners, st_winners], ignore_index=True).drop_duplicates()
+
+                created_report = create_google_sheet_report(
+                    brand_name=brand_name,
+                    report_name=report_name,
+                    kpi_summary=kpis,
+                    waste_summary=waste_summary,
+                    match_type_revenue_rows=results.get("match_type_revenue_rows", []),
+                    match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
+                    top_spenders=df_to_records(top_kw),
+                    waste_rows=df_to_records(waste_kw_combined),
+                    winner_rows=df_to_records(winner_combined),
+                    targeting_rows=df_to_records(safe_df(results.get("targeting"))),
+                    search_term_rows=df_to_records(safe_df(results.get("search_terms"))),
+                )
+
+                st.success("Branded Google Sheet report created successfully.")
+                st.markdown(f"[Open Google Sheet]({created_report['url']})")
+        except Exception as exc:
+            st.error(f"Google Sheet report creation failed: {exc}")
 
     # =========================================================
     # HEALTH SUMMARY
