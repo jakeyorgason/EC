@@ -242,10 +242,7 @@ class SalesAuditEngine:
 
         if sessions_col:
             sessions_series = (
-                df[sessions_col]
-                .astype(str)
-                .str.replace(",", "", regex=False)
-                .str.strip()
+                df[sessions_col].astype(str).str.replace(",", "", regex=False).str.strip()
             )
             out["sessions"] = pd.to_numeric(sessions_series, errors="coerce").fillna(0)
         else:
@@ -316,19 +313,15 @@ class SalesAuditEngine:
     def build_ad_sales(self, targeting_df, search_df):
         if targeting_df is not None and not targeting_df.empty and "sales" in targeting_df.columns:
             return float(pd.to_numeric(targeting_df["sales"], errors="coerce").fillna(0).sum())
-
         if search_df is not None and not search_df.empty and "sales" in search_df.columns:
             return float(pd.to_numeric(search_df["sales"], errors="coerce").fillna(0).sum())
-
         return 0.0
 
     def build_spend(self, targeting_df, search_df):
         if targeting_df is not None and not targeting_df.empty and "spend" in targeting_df.columns:
             return float(pd.to_numeric(targeting_df["spend"], errors="coerce").fillna(0).sum())
-
         if search_df is not None and not search_df.empty and "spend" in search_df.columns:
             return float(pd.to_numeric(search_df["spend"], errors="coerce").fillna(0).sum())
-
         return 0.0
 
     def build_kpi_summary(self, targeting_df, search_df, business_df):
@@ -399,7 +392,6 @@ class SalesAuditEngine:
                 mixed_reasons.append("organic share is modest")
             if waste_pct > 20:
                 mixed_reasons.append("wasted spend is elevated")
-
             if mixed_reasons:
                 status = "Mixed"
                 reasons = mixed_reasons
@@ -408,8 +400,7 @@ class SalesAuditEngine:
             f"{status}: "
             + (
                 "The account shows generally acceptable efficiency and organic support."
-                if not reasons
-                else "; ".join(reasons) + "."
+                if not reasons else "; ".join(reasons) + "."
             )
         )
 
@@ -420,7 +411,7 @@ class SalesAuditEngine:
         }
 
     # =========================================================
-    # AUDIT TABLES
+    # TABLE BUILDERS
     # =========================================================
     def build_keyword_spend_table(self, targeting_df):
         if targeting_df is None or targeting_df.empty:
@@ -508,10 +499,8 @@ class SalesAuditEngine:
 
         if not st_zero_sale.empty or not st_high_acos.empty:
             wasted_spend = float(st_zero_sale["spend"].sum() + st_high_acos["spend"].sum())
-            waste_basis = "search_terms"
         else:
             wasted_spend = float(kw_zero_sale["spend"].sum() + kw_high_acos["spend"].sum())
-            waste_basis = "keyword_targets"
 
         wasted_spend = min(wasted_spend, float(total_spend or 0))
 
@@ -521,7 +510,6 @@ class SalesAuditEngine:
             "search_zero_sale": st_zero_sale,
             "search_high_acos": st_high_acos,
             "wasted_spend": wasted_spend,
-            "waste_basis": waste_basis,
         }
 
     def build_waste_summary(self, waste_tables, total_spend):
@@ -540,10 +528,6 @@ class SalesAuditEngine:
         return {
             "wasted_spend": round(wasted_spend, 2),
             "wasted_spend_pct": round(wasted_spend_pct, 2),
-            "keyword_zero_sale_count": int(len(waste_tables.get("keyword_zero_sale", pd.DataFrame()))),
-            "keyword_high_acos_count": int(len(waste_tables.get("keyword_high_acos", pd.DataFrame()))),
-            "search_zero_sale_count": int(len(waste_tables.get("search_zero_sale", pd.DataFrame()))),
-            "search_high_acos_count": int(len(waste_tables.get("search_high_acos", pd.DataFrame()))),
             "spend_no_sale": round(spend_no_sale, 2),
         }
 
@@ -603,21 +587,6 @@ class SalesAuditEngine:
 
         return grouped.sort_values(["spend", "sales"], ascending=[False, False]).reset_index(drop=True)
 
-    def build_narrative(self, kpis, waste_summary, health_summary, winner_tables):
-        kw_winners = len(winner_tables.get("keyword_winners", pd.DataFrame()))
-        st_winners = len(winner_tables.get("search_winners", pd.DataFrame()))
-
-        return (
-            f"The account generated ${kpis['ad_sales']:,.2f} in ad sales on ${kpis['spend']:,.2f} "
-            f"of spend, producing {kpis['roas']:.2f} ROAS and {kpis['acos_pct']:.2f}% ACOS. "
-            f"Total sales were ${kpis['total_sales']:,.2f}, giving {kpis['tacos_pct']:.2f}% TACOS "
-            f"and ${kpis['organic_sales']:,.2f} in estimated organic sales. "
-            f"Wasted spend is estimated at ${waste_summary['wasted_spend']:,.2f} "
-            f"({waste_summary['wasted_spend_pct']:.2f}% of spend). "
-            f"Account verdict: {health_summary['status']}. "
-            f"Winning terms identified: {kw_winners} keyword targets and {st_winners} customer search terms."
-        )
-
     def build_date_range_label(self, targeting_df, search_df, business_df):
         date_values = []
 
@@ -627,35 +596,23 @@ class SalesAuditEngine:
 
             for col in ["Start Date", "End Date", "date", "Date", "Day", "Report Date"]:
                 if col in df.columns:
-                    parsed = pd.to_datetime(df[col], errors="coerce")
-                    parsed = parsed.dropna()
+                    parsed = pd.to_datetime(df[col], errors="coerce").dropna()
                     if not parsed.empty:
-                            date_values.extend(parsed.tolist())
+                        date_values.extend(parsed.tolist())
 
         if not date_values:
             return ""
 
         start_date = min(date_values)
         end_date = max(date_values)
-
         return f"{start_date:%m/%d} - {end_date:%m/%d}"
 
     def build_match_type_revenue_rows(self, search_df):
-        if search_df is None or search_df.empty:
+        if search_df is None or search_df.empty or "match_type" not in search_df.columns:
             return []
 
         df = search_df.copy()
-
-        if "match_type" not in df.columns:
-            return []
-
-        df["match_type"] = (
-            df["match_type"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
+        df["match_type"] = df["match_type"].fillna("").astype(str).str.upper().str.strip()
 
         base = df[df["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
         if base.empty:
@@ -682,28 +639,15 @@ class SalesAuditEngine:
         return rows
 
     def build_match_type_inefficient_rows(self, search_df):
-        if search_df is None or search_df.empty:
+        if search_df is None or search_df.empty or "match_type" not in search_df.columns:
             return []
 
         df = search_df.copy()
-
-        if "match_type" not in df.columns:
-            return []
-
-        df["match_type"] = (
-            df["match_type"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
+        df["match_type"] = df["match_type"].fillna("").astype(str).str.upper().str.strip()
 
         inefficient = df[
             (df["spend"] >= self.min_waste_spend)
-            & (
-                (df["sales"] <= 0)
-                | (df["acos"] > self.high_acos_threshold)
-            )
+            & ((df["sales"] <= 0) | (df["acos"] > self.high_acos_threshold))
         ].copy()
 
         inefficient = inefficient[inefficient["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
@@ -731,21 +675,18 @@ class SalesAuditEngine:
         return rows
 
     def build_campaign_type_rows(self, targeting_df):
-        if targeting_df is None or targeting_df.empty:
+        if targeting_df is None or targeting_df.empty or "campaign_name" not in targeting_df.columns:
             return []
 
         df = targeting_df.copy()
 
-        if "campaign_name" not in df.columns:
-            return []
-
         def infer_campaign_type(name: str) -> str:
             text = str(name).upper()
-            if "SP" in text or "SPONSORED PRODUCTS" in text:
+            if "SPONSORED PRODUCTS" in text or "| SP " in text or text.startswith("SP ") or " SP " in text:
                 return "SP"
-            if "SB" in text or "SPONSORED BRANDS" in text:
+            if "SPONSORED BRANDS" in text or "| SB " in text or text.startswith("SB ") or " SB " in text:
                 return "SB"
-            if "SD" in text or "SPONSORED DISPLAY" in text:
+            if "SPONSORED DISPLAY" in text or "| SD " in text or text.startswith("SD ") or " SD " in text:
                 return "SD"
             return "SP"
 
@@ -757,6 +698,21 @@ class SalesAuditEngine:
         )
 
         return grouped.to_dict("records")
+
+    def build_narrative(self, kpis, waste_summary, health_summary, winner_tables):
+        kw_winners = len(winner_tables.get("keyword_winners", pd.DataFrame()))
+        st_winners = len(winner_tables.get("search_winners", pd.DataFrame()))
+
+        return (
+            f"The account generated ${kpis['ad_sales']:,.2f} in ad sales on ${kpis['spend']:,.2f} "
+            f"of spend, producing {kpis['roas']:.2f} ROAS and {kpis['acos_pct']:.2f}% ACOS. "
+            f"Total sales were ${kpis['total_sales']:,.2f}, giving {kpis['tacos_pct']:.2f}% TACOS "
+            f"and ${kpis['organic_sales']:,.2f} in estimated organic sales. "
+            f"Wasted spend is estimated at ${waste_summary['wasted_spend']:,.2f} "
+            f"({waste_summary['wasted_spend_pct']:.2f}% of spend). "
+            f"Account verdict: {health_summary['status']}. "
+            f"Winning terms identified: {kw_winners} keyword targets and {st_winners} customer search terms."
+        )
 
     # =========================================================
     # PROCESS
@@ -780,6 +736,7 @@ class SalesAuditEngine:
 
         match_type_revenue_rows = self.build_match_type_revenue_rows(search_terms)
         match_type_inefficient_rows = self.build_match_type_inefficient_rows(search_terms)
+        campaign_type_rows = self.build_campaign_type_rows(targeting)
 
         waste_tables = self.build_waste_tables(keyword_table, search_table, total_spend=kpis["spend"])
         waste_summary = self.build_waste_summary(waste_tables, total_spend=kpis["spend"])
@@ -787,8 +744,6 @@ class SalesAuditEngine:
         winner_tables = self.build_winner_tables(keyword_table, search_table)
         health_summary = self.build_account_health_summary(kpis, waste_summary)
         narrative = self.build_narrative(kpis, waste_summary, health_summary, winner_tables)
-
-        campaign_type_rows = self.build_campaign_type_rows(targeting)
 
         return {
             "bulk_targets": bulk_targets,
@@ -799,6 +754,7 @@ class SalesAuditEngine:
             "business_report": business,
             "kpi_summary": kpis,
             "campaign_summary": campaign_summary,
+            "campaign_type_rows": campaign_type_rows,
             "keyword_spend_table": keyword_table,
             "search_term_spend_table": search_table,
             "waste_summary": waste_summary,
@@ -809,5 +765,4 @@ class SalesAuditEngine:
             "date_range_label": date_range_label,
             "match_type_revenue_rows": match_type_revenue_rows,
             "match_type_inefficient_rows": match_type_inefficient_rows,
-            "campaign_type_rows": campaign_type_rows,
         }
