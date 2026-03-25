@@ -46,127 +46,6 @@ class SalesAuditEngine:
         self.search_term_df = None
         self.business_report_df = None
 
-    def build_match_type_revenue_rows(self, search_df):
-        if search_df is None or search_df.empty:
-            return []
-
-        df = search_df.copy()
-
-        if "match_type" not in df.columns:
-            return []
-
-        df["match_type"] = (
-            df["match_type"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
-
-        base = df[df["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
-        if base.empty:
-            return []
-
-        grouped = (
-            base.groupby("match_type", as_index=False)
-            .agg(
-                impressions=("impressions", "sum"),
-                clicks=("clicks", "sum"),
-                spend=("spend", "sum"),
-                sales=("sales", "sum"),
-            )
-        )
-
-        rows = grouped.to_dict("records")
-
-        # Placeholder Branded KW row for now
-        rows.append({
-            "match_type": "Branded KW",
-            "impressions": 0,
-            "clicks": 0,
-            "spend": 0,
-            "sales": 0,
-        })
-
-        return rows
-
-
-    def build_match_type_inefficient_rows(self, search_df):
-        if search_df is None or search_df.empty:
-            return []
-
-        df = search_df.copy()
-
-        if "match_type" not in df.columns:
-            return []
-
-        df["match_type"] = (
-            df["match_type"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
-
-        inefficient = df[
-            (df["spend"] >= self.min_waste_spend)
-            & (
-                (df["sales"] <= 0)
-                | (df["acos"] > self.high_acos_threshold)
-            )
-        ].copy()
-
-        inefficient = inefficient[inefficient["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
-        if inefficient.empty:
-            return []
-
-        grouped = (
-            inefficient.groupby("match_type", as_index=False)
-            .agg(
-                impressions=("impressions", "sum"),
-                clicks=("clicks", "sum"),
-                spend=("spend", "sum"),
-                sales=("sales", "sum"),
-            )
-        )
-
-        rows = grouped.to_dict("records")
-
-        # Placeholder Branded KW row for now
-        rows.append({
-            "match_type": "Branded KW",
-            "impressions": 0,
-            "clicks": 0,
-            "spend": 0,
-            "sales": 0,
-        })
-
-        return rows
-
-
-    def build_date_range_label(self, targeting_df, search_df, business_df):
-        date_values = []
-
-        for df in [targeting_df, search_df, business_df]:
-            if df is None or df.empty:
-                continue
-
-            for col in ["Start Date", "End Date", "date", "Date", "Day", "Report Date"]:
-                if col in df.columns:
-                    parsed = pd.to_datetime(df[col], errors="coerce")
-                    parsed = parsed.dropna()
-                    if not parsed.empty:
-                        date_values.extend(parsed.tolist())
-
-        if not date_values:
-            return ""
-
-        start_date = min(date_values)
-        end_date = max(date_values)
-
-        return f"{start_date:%m/%d} - {end_date:%m/%d}"
-    
-
     # =========================================================
     # LOADERS
     # =========================================================
@@ -254,13 +133,10 @@ class SalesAuditEngine:
         out["sales"] = self._parse_money_or_numeric(df[sales_col])
         out["orders"] = safe_numeric(df[orders_col])
 
-        # Use existing report ACOS/ROAS only if needed for reference;
-        # final table metrics are recalculated from spend + sales.
         out = calculate_metrics(out)
         out = out[out["campaign_name"] != ""].copy()
         out = out[out["target"] != ""].copy()
 
-        # Drop obvious duplicates just in case.
         out = out.drop_duplicates(
             subset=["campaign_name", "ad_group_name", "target", "match_type", "impressions", "clicks", "spend", "sales", "orders"]
         ).reset_index(drop=True)
@@ -438,7 +314,6 @@ class SalesAuditEngine:
         return float(pd.to_numeric(business_df["total_sales"], errors="coerce").fillna(0).sum())
 
     def build_ad_sales(self, targeting_df, search_df):
-        # Prefer targeting as the primary account-level source.
         if targeting_df is not None and not targeting_df.empty and "sales" in targeting_df.columns:
             return float(pd.to_numeric(targeting_df["sales"], errors="coerce").fillna(0).sum())
 
@@ -448,7 +323,6 @@ class SalesAuditEngine:
         return 0.0
 
     def build_spend(self, targeting_df, search_df):
-        # Prefer targeting as the primary account-level source.
         if targeting_df is not None and not targeting_df.empty and "spend" in targeting_df.columns:
             return float(pd.to_numeric(targeting_df["spend"], errors="coerce").fillna(0).sum())
 
@@ -488,6 +362,11 @@ class SalesAuditEngine:
             "sessions": round(sessions, 2),
             "units_ordered": round(units_ordered, 2),
             "estimated_post_ad_contribution": round(ad_sales - spend, 2),
+            "unit_session_percentage": None,
+            "ntb_sales": None,
+            "ntb_orders": None,
+            "ntb_sales_pct": None,
+            "ntb_orders_pct": None,
         }
 
     def build_account_health_summary(self, kpis, waste_summary):
@@ -570,55 +449,6 @@ class SalesAuditEngine:
         grouped["acos_pct"] = grouped["acos"] * 100
         grouped = grouped.sort_values(["spend", "sales"], ascending=[False, False]).reset_index(drop=True)
         return grouped
-    
-    def process(self):
-        self.load_reports()
-
-        bulk_targets = self.normalize_bulk_targets()
-        targeting = self.normalize_targeting()
-        search_terms = self.normalize_search_terms()
-        impression_share = self.normalize_impression_share()
-        business = self.normalize_business_report()
-
-        targeting_with_share = self.join_impression_share_to_targeting(targeting, impression_share)
-
-        kpis = self.build_kpi_summary(targeting, search_terms, business)
-
-        # Use raw targeting for spend/sales rollups
-        keyword_table = self.build_keyword_spend_table(targeting)
-        search_table = self.build_search_term_spend_table(search_terms)
-        campaign_summary = self.build_campaign_summary(targeting)
-        date_range_label = self.build_date_range_label(targeting, search_terms, business)
-        match_type_revenue_rows = self.build_match_type_revenue_rows(search_terms)
-        match_type_inefficient_rows = self.build_match_type_inefficient_rows(search_terms)
-
-        waste_tables = self.build_waste_tables(keyword_table, search_table)
-        waste_summary = self.build_waste_summary(waste_tables, total_spend=kpis["spend"])
-
-        winner_tables = self.build_winner_tables(keyword_table, search_table)
-        health_summary = self.build_account_health_summary(kpis, waste_summary)
-        narrative = self.build_narrative(kpis, waste_summary, health_summary, winner_tables)
-
-        return {
-            "bulk_targets": bulk_targets,
-            "targeting": targeting,
-            "targeting_with_share": targeting_with_share,
-            "search_terms": search_terms,
-            "impression_share": impression_share,
-            "business_report": business,
-            "kpi_summary": kpis,
-            "campaign_summary": campaign_summary,
-            "keyword_spend_table": keyword_table,
-            "search_term_spend_table": search_table,
-            "waste_summary": waste_summary,
-            "waste_tables": waste_tables,
-            "winner_tables": winner_tables,
-            "health_summary": health_summary,
-            "narrative": narrative,
-            "match_type_revenue_rows": match_type_revenue_rows,
-            "match_type_inefficient_rows": match_type_inefficient_rows,
-            "date_range_label": date_range_label,
-        }
 
     def build_search_term_spend_table(self, search_df):
         if search_df is None or search_df.empty:
@@ -676,7 +506,6 @@ class SalesAuditEngine:
         st_zero_sale = st_zero_sale.sort_values("spend", ascending=False).reset_index(drop=True)
         st_high_acos = st_high_acos.sort_values("spend", ascending=False).reset_index(drop=True)
 
-        # Use ONE basis only for the headline wasted spend number.
         if not st_zero_sale.empty or not st_high_acos.empty:
             wasted_spend = float(st_zero_sale["spend"].sum() + st_high_acos["spend"].sum())
             waste_basis = "search_terms"
@@ -684,7 +513,6 @@ class SalesAuditEngine:
             wasted_spend = float(kw_zero_sale["spend"].sum() + kw_high_acos["spend"].sum())
             waste_basis = "keyword_targets"
 
-        # Safety cap: headline wasted spend can never exceed total spend.
         wasted_spend = min(wasted_spend, float(total_spend or 0))
 
         return {
@@ -700,6 +528,15 @@ class SalesAuditEngine:
         wasted_spend = float(waste_tables.get("wasted_spend", 0.0))
         wasted_spend_pct = float(wasted_spend / total_spend * 100) if total_spend > 0 else 0.0
 
+        spend_no_sale = 0.0
+        st_zero = waste_tables.get("search_zero_sale", pd.DataFrame())
+        kw_zero = waste_tables.get("keyword_zero_sale", pd.DataFrame())
+
+        if isinstance(st_zero, pd.DataFrame) and not st_zero.empty:
+            spend_no_sale = float(st_zero["spend"].sum())
+        elif isinstance(kw_zero, pd.DataFrame) and not kw_zero.empty:
+            spend_no_sale = float(kw_zero["spend"].sum())
+
         return {
             "wasted_spend": round(wasted_spend, 2),
             "wasted_spend_pct": round(wasted_spend_pct, 2),
@@ -707,6 +544,7 @@ class SalesAuditEngine:
             "keyword_high_acos_count": int(len(waste_tables.get("keyword_high_acos", pd.DataFrame()))),
             "search_zero_sale_count": int(len(waste_tables.get("search_zero_sale", pd.DataFrame()))),
             "search_high_acos_count": int(len(waste_tables.get("search_high_acos", pd.DataFrame()))),
+            "spend_no_sale": round(spend_no_sale, 2),
         }
 
     def build_winner_tables(self, keyword_table, search_table):
@@ -780,6 +618,118 @@ class SalesAuditEngine:
             f"Winning terms identified: {kw_winners} keyword targets and {st_winners} customer search terms."
         )
 
+    def build_date_range_label(self, targeting_df, search_df, business_df):
+        date_values = []
+
+        for df in [targeting_df, search_df, business_df]:
+            if df is None or df.empty:
+                continue
+
+            for col in ["Start Date", "End Date", "date", "Date", "Day", "Report Date"]:
+                if col in df.columns:
+                    parsed = pd.to_datetime(df[col], errors="coerce")
+                    parsed = parsed.dropna()
+                    if not parsed.empty:
+                        date_values.extend(parsed.tolist())
+
+        if not date_values:
+            return ""
+
+        start_date = min(date_values)
+        end_date = max(date_values)
+
+        return f"{start_date:%m/%d} - {end_date:%m/%d}"
+
+    def build_match_type_revenue_rows(self, search_df):
+        if search_df is None or search_df.empty:
+            return []
+
+        df = search_df.copy()
+
+        if "match_type" not in df.columns:
+            return []
+
+        df["match_type"] = (
+            df["match_type"]
+            .fillna("")
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        base = df[df["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
+        if base.empty:
+            return []
+
+        grouped = (
+            base.groupby("match_type", as_index=False)
+            .agg(
+                impressions=("impressions", "sum"),
+                clicks=("clicks", "sum"),
+                spend=("spend", "sum"),
+                sales=("sales", "sum"),
+            )
+        )
+
+        rows = grouped.to_dict("records")
+        rows.append({
+            "match_type": "Branded KW",
+            "impressions": 0,
+            "clicks": 0,
+            "spend": 0,
+            "sales": 0,
+        })
+        return rows
+
+    def build_match_type_inefficient_rows(self, search_df):
+        if search_df is None or search_df.empty:
+            return []
+
+        df = search_df.copy()
+
+        if "match_type" not in df.columns:
+            return []
+
+        df["match_type"] = (
+            df["match_type"]
+            .fillna("")
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        inefficient = df[
+            (df["spend"] >= self.min_waste_spend)
+            & (
+                (df["sales"] <= 0)
+                | (df["acos"] > self.high_acos_threshold)
+            )
+        ].copy()
+
+        inefficient = inefficient[inefficient["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
+        if inefficient.empty:
+            return []
+
+        grouped = (
+            inefficient.groupby("match_type", as_index=False)
+            .agg(
+                impressions=("impressions", "sum"),
+                clicks=("clicks", "sum"),
+                spend=("spend", "sum"),
+                sales=("sales", "sum"),
+            )
+        )
+
+        rows = grouped.to_dict("records")
+        rows.append({
+            "match_type": "Branded KW",
+            "impressions": 0,
+            "clicks": 0,
+            "spend": 0,
+            "sales": 0,
+        })
+        return rows
+
     # =========================================================
     # PROCESS
     # =========================================================
@@ -792,17 +742,16 @@ class SalesAuditEngine:
         impression_share = self.normalize_impression_share()
         business = self.normalize_business_report()
 
-        # Keep the join available if you want ISR context later,
-        # but do NOT use it as the source for spend/sales rollups.
         targeting_with_share = self.join_impression_share_to_targeting(targeting, impression_share)
 
-        # KPI summary should use raw targeting/search/business data
         kpis = self.build_kpi_summary(targeting, search_terms, business)
-
-        # IMPORTANT: use raw targeting here to avoid duplicated spend/sales
         keyword_table = self.build_keyword_spend_table(targeting)
         search_table = self.build_search_term_spend_table(search_terms)
         campaign_summary = self.build_campaign_summary(targeting)
+        date_range_label = self.build_date_range_label(targeting, search_terms, business)
+
+        match_type_revenue_rows = self.build_match_type_revenue_rows(search_terms)
+        match_type_inefficient_rows = self.build_match_type_inefficient_rows(search_terms)
 
         waste_tables = self.build_waste_tables(keyword_table, search_table, total_spend=kpis["spend"])
         waste_summary = self.build_waste_summary(waste_tables, total_spend=kpis["spend"])
@@ -827,4 +776,7 @@ class SalesAuditEngine:
             "winner_tables": winner_tables,
             "health_summary": health_summary,
             "narrative": narrative,
+            "date_range_label": date_range_label,
+            "match_type_revenue_rows": match_type_revenue_rows,
+            "match_type_inefficient_rows": match_type_inefficient_rows,
         }
