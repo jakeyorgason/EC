@@ -761,15 +761,21 @@ if results:
 
     with waste_left:
         st.markdown("**Keyword / Target Waste**")
-        waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates().head(20)
-        if not waste_kw_combined.empty:
-            st.dataframe(waste_kw_combined, use_container_width=True)
-        else:
-            st.info("No keyword/target waste found.")
+        waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
+        if not waste_kw_combined.empty and "spend" in waste_kw_combined.columns:
+            waste_kw_combined = waste_kw_combined[
+                waste_kw_combined["spend"].map(_spend_to_float) >= 0.01
+            ].copy()
+        waste_kw_combined = waste_kw_combined.head(20)
 
     with waste_right:
         st.markdown("**Customer Search Term Waste**")
-        waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates().head(20)
+        waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates()
+        if not waste_st_combined.empty and "spend" in waste_st_combined.columns:
+            waste_st_combined = waste_st_combined[
+                waste_st_combined["spend"].map(_spend_to_float) >= 0.01
+            ].copy()
+        waste_st_combined = waste_st_combined.head(20)
         if not waste_st_combined.empty:
             st.dataframe(waste_st_combined, use_container_width=True)
         else:
@@ -827,6 +833,25 @@ if results:
                 date_range_label = (results.get("date_range_label") or "").strip() or "MM/DD - MM/DD"
                 waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
                 waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates()
+
+                def _spend_to_float(v):
+                    if v is None:
+                        return 0.0
+                    text = str(v).replace("$", "").replace(",", "").strip()
+                    try:
+                        return float(text)
+                    except ValueError:
+                        return 0.0
+                
+                if not waste_kw_combined.empty and "spend" in waste_kw_combined.columns:
+                    waste_kw_combined = waste_kw_combined[
+                        waste_kw_combined["spend"].map(_spend_to_float) >= 0.01
+                    ].copy()
+                
+                if not waste_st_combined.empty and "spend" in waste_st_combined.columns:
+                    waste_st_combined = waste_st_combined[
+                        waste_st_combined["spend"].map(_spend_to_float) >= 0.01
+                    ].copy()
 
                 created_report = create_google_sheet_report(
                     brand_name=brand_name,
