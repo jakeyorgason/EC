@@ -663,7 +663,7 @@ if results:
     waste_left, waste_right = st.columns(2)
     with waste_left:
         st.markdown("**Keyword / Target Waste**")
-        waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates().head(20)
+    waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates().head(20)
         if not waste_kw_combined.empty:
             st.dataframe(waste_kw_combined, use_container_width=True)
         else:
