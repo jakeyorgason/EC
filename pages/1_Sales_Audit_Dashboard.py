@@ -556,7 +556,7 @@ st.markdown(
 
 u1, u2 = st.columns(2)
 u3, u4 = st.columns(2)
-u5, _ = st.columns([1, 1])
+u5, u6 = st.columns(2)
 
 with u1:
     bulk_file = st.file_uploader(
@@ -591,6 +591,13 @@ with u5:
         "Sales & Traffic Business Report",
         type=["csv", "xlsx", "xls"],
         key="sales_audit_business_report_file",
+    )
+
+with u6:
+    sb_campaign_file = st.file_uploader(
+        "Sponsored Brands Campaign Report (optional for NTB Data)",
+        type=["csv", "xlsx", "xls"],
+        key="sales_audit_sb_campaign_file",
     )
 
 required_ready = all(
@@ -630,6 +637,7 @@ if run_clicked:
                 targeting_file=targeting_file,
                 search_term_file=search_term_file,
                 business_report_file=business_report_file,
+                sb_campaign_file=sb_campaign_file,
                 high_acos_threshold=high_acos_threshold,
                 winning_acos_threshold=winning_acos_threshold,
                 min_waste_spend=min_waste_spend,
