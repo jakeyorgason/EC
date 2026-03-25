@@ -405,24 +405,24 @@ class SalesAuditEngine:
 ntb_sales_pct = float(ntb_sales / ad_sales * 100) if ad_sales > 0 else 0.0
 ntb_orders_pct = float(ntb_orders / units_ordered * 100) if units_ordered > 0 else 0.0
 
-        return {
-            "spend": round(spend, 2),
-            "ad_sales": round(ad_sales, 2),
-            "total_sales": round(total_sales, 2),
-            "organic_sales": round(organic_sales, 2),
-            "acos_pct": round(acos * 100, 2),
-            "roas": round(roas, 2),
-            "tacos_pct": round(tacos * 100, 2),
-            "organic_share_pct": round(organic_share * 100, 2),
-            "sessions": round(sessions, 2),
-            "units_ordered": round(units_ordered, 2),
-            "estimated_post_ad_contribution": round(ad_sales - spend, 2),
-            "unit_session_percentage": round(unit_session_percentage * 100, 2),
-            "ntb_sales": round(ntb_sales, 2),
-            "ntb_orders": round(ntb_orders, 2),
-            "ntb_sales_pct": round(ntb_sales_pct, 2),
-            "ntb_orders_pct": round(ntb_orders_pct, 2),
-        }
+    return {
+        "spend": round(spend, 2),
+        "ad_sales": round(ad_sales, 2),
+        "total_sales": round(total_sales, 2),
+        "organic_sales": round(organic_sales, 2),
+        "acos_pct": round(acos * 100, 2),
+        "roas": round(roas, 2),
+        "tacos_pct": round(tacos * 100, 2),
+        "organic_share_pct": round(organic_share * 100, 2),
+        "sessions": round(sessions, 2),
+        "units_ordered": round(units_ordered, 2),
+        "estimated_post_ad_contribution": round(ad_sales - spend, 2),
+        "unit_session_percentage": round(unit_session_percentage * 100, 2),
+        "ntb_sales": round(ntb_sales, 2),
+        "ntb_orders": round(ntb_orders, 2),
+        "ntb_sales_pct": round(ntb_sales_pct, 2),
+        "ntb_orders_pct": round(ntb_orders_pct, 2),
+    }
 
     def build_account_health_summary(self, kpis, waste_summary):
         acos = kpis.get("acos_pct", 0)
