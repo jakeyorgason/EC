@@ -63,6 +63,15 @@ def format_percent(value: float) -> str:
 def format_number(value: float) -> str:
     return f"{get_number(value):,.2f}"
 
+def _spend_to_float(v):
+    if v is None:
+        return 0.0
+    text = str(v).replace("$", "").replace(",", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
 
 def render_metric_card(label: str, value: str, tone: str = "brand", small: bool = False) -> None:
     value_class = "metric-value small" if small else "metric-value"
