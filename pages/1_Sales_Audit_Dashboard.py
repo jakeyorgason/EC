@@ -818,7 +818,7 @@ if results:
         key="sales_audit_google_sheet_report_name",
     )
 
-    if st.button("Create Branded Google Sheet Report", use_container_width=True):
+    if st.button("Create Branded Google Sheet Report", type="primary", use_container_width=True):
         try:
             if not brand_name:
                 st.error("Please enter a Brand Name before creating the Google Sheet report.")
