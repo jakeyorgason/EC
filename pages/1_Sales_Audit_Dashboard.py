@@ -517,6 +517,14 @@ if results:
     winner_tables = safe_dict(results.get("winner_tables"))
     narrative = str(results.get("narrative", "")).strip()
 
+    with st.expander("Match Type Source Debug", expanded=False):
+        search_terms_df = safe_df(results.get("search_terms"))
+        if not search_terms_df.empty and "match_type" in search_terms_df.columns:
+            st.write("Unique search-term match types:", sorted(search_terms_df["match_type"].dropna().astype(str).unique().tolist()))
+            st.write(search_terms_df[["match_type", "impressions", "clicks", "spend", "sales"]].head(20))
+        else:
+            st.write("No search_terms match_type column found.")
+
     kw_zero = simplify_term_table(safe_df(waste_tables.get("keyword_zero_sale")), "target")
     kw_high = simplify_term_table(safe_df(waste_tables.get("keyword_high_acos")), "target")
     st_zero = simplify_term_table(safe_df(waste_tables.get("search_zero_sale")), "customer_search_term")
