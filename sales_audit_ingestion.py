@@ -478,41 +478,52 @@ class SalesAuditEngine:
         kw_high_acos = pd.DataFrame()
         st_zero_sale = pd.DataFrame()
         st_high_acos = pd.DataFrame()
-
+    
         if keyword_table is not None and not keyword_table.empty:
             kw_zero_sale = keyword_table[
                 (keyword_table["spend"] >= self.min_waste_spend) & (keyword_table["sales"] <= 0)
             ].copy()
-
+    
             kw_high_acos = keyword_table[
                 (keyword_table["spend"] >= self.min_waste_spend)
                 & (keyword_table["sales"] > 0)
                 & (keyword_table["acos"] > self.high_acos_threshold)
             ].copy()
-
+    
         if search_table is not None and not search_table.empty:
             st_zero_sale = search_table[
                 (search_table["spend"] >= self.min_waste_spend) & (search_table["sales"] <= 0)
             ].copy()
-
+    
             st_high_acos = search_table[
                 (search_table["spend"] >= self.min_waste_spend)
                 & (search_table["sales"] > 0)
                 & (search_table["acos"] > self.high_acos_threshold)
             ].copy()
-
+    
         kw_zero_sale = kw_zero_sale.sort_values("spend", ascending=False).reset_index(drop=True)
         kw_high_acos = kw_high_acos.sort_values("spend", ascending=False).reset_index(drop=True)
         st_zero_sale = st_zero_sale.sort_values("spend", ascending=False).reset_index(drop=True)
         st_high_acos = st_high_acos.sort_values("spend", ascending=False).reset_index(drop=True)
-
+    
+        def calculate_wasted_spend(zero_df, high_df):
+            zero_waste = float(zero_df["spend"].sum()) if not zero_df.empty else 0.0
+    
+            high_waste = 0.0
+            if not high_df.empty:
+                allowed_spend = high_df["sales"] * self.high_acos_threshold
+                wasted_portion = (high_df["spend"] - allowed_spend).clip(lower=0)
+                high_waste = float(wasted_portion.sum())
+    
+            return zero_waste + high_waste
+    
         if not st_zero_sale.empty or not st_high_acos.empty:
-            wasted_spend = float(st_zero_sale["spend"].sum() + st_high_acos["spend"].sum())
+            wasted_spend = calculate_wasted_spend(st_zero_sale, st_high_acos)
         else:
-            wasted_spend = float(kw_zero_sale["spend"].sum() + kw_high_acos["spend"].sum())
-
+            wasted_spend = calculate_wasted_spend(kw_zero_sale, kw_high_acos)
+    
         wasted_spend = min(wasted_spend, float(total_spend or 0))
-
+    
         return {
             "keyword_zero_sale": kw_zero_sale,
             "keyword_high_acos": kw_high_acos,
