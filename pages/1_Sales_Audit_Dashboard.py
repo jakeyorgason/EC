@@ -548,9 +548,12 @@ if results:
                 waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
                 winner_combined = pd.concat([kw_winners, st_winners], ignore_index=True).drop_duplicates()
 
+                date_range_label = "MM/DD - MM/DD"
+
                 created_report = create_google_sheet_report(
                     brand_name=brand_name,
                     report_name=report_name,
+                    date_range_label=date_range_label,
                     kpi_summary=kpis,
                     waste_summary=waste_summary,
                     match_type_revenue_rows=results.get("match_type_revenue_rows", []),
