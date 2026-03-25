@@ -529,10 +529,10 @@ with s2:
 with s3:
     min_waste_spend = st.number_input(
         "Minimum Spend to Flag Waste",
-        min_value=0.0,
+        min_value=0.01,
         max_value=1000.0,
         value=0.01,
-        step=5.0,
+        step=1.0,
     )
 
 with s4:
