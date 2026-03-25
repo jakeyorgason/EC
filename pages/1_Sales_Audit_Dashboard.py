@@ -626,6 +626,7 @@ if run_clicked:
                 min_waste_spend=min_waste_spend,
                 min_winner_orders=min_winner_orders,
             )
+            engine.brand_name = (brand_name or "").strip()
 
             results = engine.process()
             results["brand_name"] = (brand_name or "").strip()
