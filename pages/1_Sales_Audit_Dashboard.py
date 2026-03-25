@@ -166,11 +166,14 @@ def normalize_records_for_sheet(df: pd.DataFrame) -> list[dict]:
     for col in out.columns:
         col_l = str(col).lower().strip()
 
-        # Parse values like "$123.45" or "12.34%"
         out[col] = out[col].map(parse_numeric_like)
 
         if col_l in {"ctr", "cvr", "acos", "acos_pct"}:
-            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+            out[col] = (
+                pd.to_numeric(out[col], errors="coerce")
+                .fillna(0)
+                .map(lambda x: round(float(x) / 100.0, 6))
+            )
 
         elif col_l in {"roas"}:
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
@@ -185,7 +188,11 @@ def normalize_records_for_sheet(df: pd.DataFrame) -> list[dict]:
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: int(round(float(x))))
 
         elif "pct" in col_l or "percent" in col_l:
-            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+            out[col] = (
+                pd.to_numeric(out[col], errors="coerce")
+                .fillna(0)
+                .map(lambda x: round(float(x) / 100.0, 6))
+            )
 
         elif pd.api.types.is_numeric_dtype(out[col]):
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
