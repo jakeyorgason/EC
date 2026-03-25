@@ -343,6 +343,15 @@ class SalesAuditEngine:
         if business_df is not None and not business_df.empty and "units_ordered" in business_df.columns:
             units_ordered = float(pd.to_numeric(business_df["units_ordered"], errors="coerce").fillna(0).sum())
 
+        unit_session_percentage = float(units_ordered / sessions) if sessions > 0 else 0.0
+
+        # NTB fields are not available in the current uploaded report set.
+        # Keep them explicit zeros so the sheet populates cleanly.
+        ntb_sales = 0.0
+        ntb_orders = 0.0
+        ntb_sales_pct = 0.0
+        ntb_orders_pct = 0.0
+
         return {
             "spend": round(spend, 2),
             "ad_sales": round(ad_sales, 2),
@@ -355,11 +364,11 @@ class SalesAuditEngine:
             "sessions": round(sessions, 2),
             "units_ordered": round(units_ordered, 2),
             "estimated_post_ad_contribution": round(ad_sales - spend, 2),
-            "unit_session_percentage": None,
-            "ntb_sales": None,
-            "ntb_orders": None,
-            "ntb_sales_pct": None,
-            "ntb_orders_pct": None,
+            "unit_session_percentage": round(unit_session_percentage * 100, 2),
+            "ntb_sales": round(ntb_sales, 2),
+            "ntb_orders": round(ntb_orders, 2),
+            "ntb_sales_pct": round(ntb_sales_pct, 2),
+            "ntb_orders_pct": round(ntb_orders_pct, 2),
         }
 
     def build_account_health_summary(self, kpis, waste_summary):
