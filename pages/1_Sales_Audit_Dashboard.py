@@ -155,6 +155,14 @@ def create_google_sheet_report(
     match_type_inefficient_rows: list[dict],
     campaign_rows: list[dict],
     campaign_type_rows: list[dict],
+    top_keyword_rows: list[dict],
+    top_search_term_rows: list[dict],
+    waste_keyword_rows: list[dict],
+    waste_search_term_rows: list[dict],
+    winner_keyword_rows: list[dict],
+    winner_search_term_rows: list[dict],
+    targeting_data_rows: list[dict],
+    search_term_data_rows: list[dict],
 ) -> dict:
     webhook_url = st.secrets["APPS_SCRIPT_WEBHOOK_URL"]
     template_id = st.secrets["GOOGLE_SHEETS_TEMPLATE_ID"]
@@ -172,6 +180,14 @@ def create_google_sheet_report(
         "matchTypeInefficientRows": match_type_inefficient_rows,
         "campaignRows": campaign_rows,
         "campaignTypeRows": campaign_type_rows,
+        "topKeywordRows": top_keyword_rows,
+        "topSearchTermRows": top_search_term_rows,
+        "wasteKeywordRows": waste_keyword_rows,
+        "wasteSearchTermRows": waste_search_term_rows,
+        "winnerKeywordRows": winner_keyword_rows,
+        "winnerSearchTermRows": winner_search_term_rows,
+        "targetingDataRows": targeting_data_rows,
+        "searchTermDataRows": search_term_data_rows,
     }
 
     response = requests.post(webhook_url, json=payload, timeout=180)
@@ -708,6 +724,9 @@ if results:
             else:
                 date_range_label = (results.get("date_range_label") or "").strip() or "MM/DD - MM/DD"
 
+                                waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
+                waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates()
+
                 created_report = create_google_sheet_report(
                     brand_name=brand_name,
                     report_name=report_name,
@@ -718,6 +737,14 @@ if results:
                     match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
                     campaign_rows=df_to_records(campaign_summary),
                     campaign_type_rows=results.get("campaign_type_rows", []),
+                    top_keyword_rows=df_to_records(top_kw),
+                    top_search_term_rows=df_to_records(top_st),
+                    waste_keyword_rows=df_to_records(waste_kw_combined),
+                    waste_search_term_rows=df_to_records(waste_st_combined),
+                    winner_keyword_rows=df_to_records(kw_winners),
+                    winner_search_term_rows=df_to_records(st_winners),
+                    targeting_data_rows=df_to_records(safe_df(results.get("targeting_with_share"))),
+                    search_term_data_rows=df_to_records(safe_df(results.get("search_terms"))),
                 )
 
                 st.success("Branded Google Sheet report created successfully.")
