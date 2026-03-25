@@ -135,13 +135,30 @@ def simplify_campaign_table(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["spend", "sales"], ascending=[False, False]).reset_index(drop=True)
 
 
-def df_to_records(df: pd.DataFrame) -> list[dict]:
+def normalize_records_for_sheet(df: pd.DataFrame) -> list[dict]:
     if df is None or df.empty:
         return []
 
     out = df.copy()
     out = out.replace({pd.NA: None})
     out = out.where(pd.notnull(out), None)
+
+    for col in out.columns:
+        col_l = str(col).lower().strip()
+
+        if col_l in {"ctr", "cvr", "acos", "acos_pct"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+        elif col_l in {"cpc"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+        elif "pct" in col_l or "percent" in col_l:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+        elif col_l in {"spend", "sales", "ad_sales", "total_sales", "organic_sales"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+        elif col_l in {"impressions", "clicks", "orders", "units_ordered", "sessions"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: int(round(float(x))))
+        elif pd.api.types.is_numeric_dtype(out[col]):
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+
     return out.to_dict("records")
 
 
@@ -767,16 +784,16 @@ if results:
                     waste_summary=waste_summary,
                     match_type_revenue_rows=results.get("match_type_revenue_rows", []),
                     match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
-                    campaign_rows=df_to_records(campaign_summary),
+                    campaign_rows=normalize_records_for_sheet(campaign_summary),
                     campaign_type_rows=results.get("campaign_type_rows", []),
-                    top_keyword_rows=df_to_records(top_kw),
-                    top_search_term_rows=df_to_records(top_st),
-                    waste_keyword_rows=df_to_records(waste_kw_combined),
-                    waste_search_term_rows=df_to_records(waste_st_combined),
-                    winner_keyword_rows=df_to_records(kw_winners),
-                    winner_search_term_rows=df_to_records(st_winners),
-                    targeting_data_rows=df_to_records(safe_df(results.get("targeting_with_share"))),
-                    search_term_data_rows=df_to_records(safe_df(results.get("search_terms"))),
+                    top_keyword_rows=normalize_records_for_sheet(top_kw),
+                    top_search_term_rows=normalize_records_for_sheet(top_st),
+                    waste_keyword_rows=normalize_records_for_sheet(waste_kw_combined),
+                    waste_search_term_rows=normalize_records_for_sheet(waste_st_combined),
+                    winner_keyword_rows=normalize_records_for_sheet(kw_winners),
+                    winner_search_term_rows=normalize_records_for_sheet(st_winners),
+                    targeting_data_rows=normalize_records_for_sheet(safe_df(results.get("targeting_with_share"))),
+                    search_term_data_rows=normalize_records_for_sheet(safe_df(results.get("search_terms"))),
                 )
 
                 st.success("Branded Google Sheet report created successfully.")
