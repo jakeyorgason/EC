@@ -24,10 +24,11 @@ class SalesAuditEngine:
         targeting_file,
         search_term_file,
         business_report_file,
+        sb_campaign_file=None,
         high_acos_threshold=40.0,
-        winning_acos_threshold=25.0,
-        min_waste_spend=20.0,
-        min_winner_orders=2,
+        winning_acos_threshold=15.0,
+        min_waste_spend=0.01,
+        min_winner_orders=1,
     ):
         self.bulk_file = bulk_file
         self.impression_share_file = impression_share_file
@@ -39,6 +40,8 @@ class SalesAuditEngine:
         self.winning_acos_threshold = float(winning_acos_threshold) / 100.0
         self.min_waste_spend = float(min_waste_spend)
         self.min_winner_orders = int(min_winner_orders)
+        self.sb_campaign_file = sb_campaign_file
+        self.sb_campaign_df = None
 
         self.bulk_df = None
         self.impression_share_df = None
@@ -55,6 +58,7 @@ class SalesAuditEngine:
         self.targeting_df = load_file(self.targeting_file)
         self.search_term_df = load_file(self.search_term_file)
         self.business_report_df = load_file(self.business_report_file)
+        self.sb_campaign_df = load_file(self.sb_campaign_file) if self.sb_campaign_file is not None else pd.DataFrame()
 
     def load_bulk_sheet(self):
         try:
@@ -257,6 +261,50 @@ class SalesAuditEngine:
 
         return out.reset_index(drop=True)
 
+    def normalize_sb_campaign_report(self):
+        if self.sb_campaign_df is None or self.sb_campaign_df.empty:
+            return pd.DataFrame()
+    
+        df = self.sb_campaign_df.copy()
+        out = pd.DataFrame(index=df.index)
+    
+        def first_present(candidates):
+            for c in candidates:
+                if c in df.columns:
+                    return c
+            return None
+    
+        sales_col = first_present([
+            "Sales",
+            "14 Day Total Sales",
+            "14 day total sales",
+            "Attributed Sales",
+        ])
+        orders_col = first_present([
+            "Orders",
+            "14 Day Total Orders",
+            "14 day total orders",
+        ])
+        ntb_sales_col = first_present([
+            "New-to-brand sales",
+            "14 Day New-to-brand Sales",
+            "14 day new-to-brand sales",
+            "NTB Sales",
+        ])
+        ntb_orders_col = first_present([
+            "New-to-brand orders",
+            "14 Day New-to-brand Orders",
+            "14 day new-to-brand orders",
+            "NTB Orders",
+        ])
+    
+        out["sales"] = self._parse_money_or_numeric(df[sales_col]) if sales_col else 0.0
+        out["orders"] = safe_numeric(df[orders_col]) if orders_col else 0.0
+        out["ntb_sales"] = self._parse_money_or_numeric(df[ntb_sales_col]) if ntb_sales_col else 0.0
+        out["ntb_orders"] = safe_numeric(df[ntb_orders_col]) if ntb_orders_col else 0.0
+    
+        return out.reset_index(drop=True)
+
     # =========================================================
     # HELPERS
     # =========================================================
@@ -324,7 +372,7 @@ class SalesAuditEngine:
             return float(pd.to_numeric(search_df["spend"], errors="coerce").fillna(0).sum())
         return 0.0
 
-    def build_kpi_summary(self, targeting_df, search_df, business_df):
+    def build_kpi_summary(self, targeting_df, search_df, business_df, sb_campaign_df):
         spend = self.build_spend(targeting_df, search_df)
         ad_sales = self.build_ad_sales(targeting_df, search_df)
         total_sales = self.build_total_sales(business_df)
@@ -345,12 +393,17 @@ class SalesAuditEngine:
 
         unit_session_percentage = float(units_ordered / sessions) if sessions > 0 else 0.0
 
-        # NTB fields are not available in the current uploaded report set.
-        # Keep them explicit zeros so the sheet populates cleanly.
         ntb_sales = 0.0
         ntb_orders = 0.0
-        ntb_sales_pct = 0.0
-        ntb_orders_pct = 0.0
+        
+        if sb_campaign_df is not None and not sb_campaign_df.empty:
+            if "ntb_sales" in sb_campaign_df.columns:
+                ntb_sales = float(pd.to_numeric(sb_campaign_df["ntb_sales"], errors="coerce").fillna(0).sum())
+            if "ntb_orders" in sb_campaign_df.columns:
+                ntb_orders = float(pd.to_numeric(sb_campaign_df["ntb_orders"], errors="coerce").fillna(0).sum())
+
+ntb_sales_pct = float(ntb_sales / ad_sales * 100) if ad_sales > 0 else 0.0
+ntb_orders_pct = float(ntb_orders / units_ordered * 100) if units_ordered > 0 else 0.0
 
         return {
             "spend": round(spend, 2),
@@ -844,10 +897,11 @@ class SalesAuditEngine:
         search_terms = self.normalize_search_terms()
         impression_share = self.normalize_impression_share()
         business = self.normalize_business_report()
+        sb_campaign = self.normalize_sb_campaign_report()
 
         targeting_with_share = self.join_impression_share_to_targeting(targeting, impression_share)
 
-        kpis = self.build_kpi_summary(targeting, search_terms, business)
+        kpis = self.build_kpi_summary(targeting, search_terms, business, sb_campaign)
         keyword_table = self.build_keyword_spend_table(targeting)
         search_table = self.build_search_term_spend_table(search_terms)
         campaign_summary = self.build_campaign_summary(targeting)
@@ -873,6 +927,7 @@ class SalesAuditEngine:
             "search_terms": search_terms,
             "impression_share": impression_share,
             "business_report": business,
+            "sb_campaign_report": sb_campaign,
             "kpi_summary": kpis,
             "campaign_summary": campaign_summary,
             "campaign_type_rows": campaign_type_rows,
