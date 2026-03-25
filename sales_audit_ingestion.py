@@ -630,7 +630,7 @@ class SalesAuditEngine:
                     parsed = pd.to_datetime(df[col], errors="coerce")
                     parsed = parsed.dropna()
                     if not parsed.empty:
-                        date_values.extend(parsed.tolist())
+                            date_values.extend(parsed.tolist())
 
         if not date_values:
             return ""
