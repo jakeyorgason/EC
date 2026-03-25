@@ -261,7 +261,7 @@ def create_google_sheet_report(
 st.markdown(
     """
     <style>
-        brand-shell {
+        .brand-shell {
             background: linear-gradient(135deg, #EA580C 0%, #1F2937 100%);
             border-radius: 20px;
             padding: 65px 30px;
