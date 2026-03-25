@@ -46,6 +46,90 @@ class SalesAuditEngine:
         self.search_term_df = None
         self.business_report_df = None
 
+    def build_match_type_revenue_rows(self, targeting_df):
+        if targeting_df is None or targeting_df.empty:
+            return []
+
+        df = targeting_df.copy()
+
+        if "match_type" not in df.columns:
+            return []
+
+        df["match_type"] = df["match_type"].fillna("").astype(str).str.upper().str.strip()
+
+        base = df[df["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])].copy()
+
+        grouped = (
+            base.groupby("match_type", as_index=False)
+            .agg(
+                impressions=("impressions", "sum"),
+                clicks=("clicks", "sum"),
+                spend=("spend", "sum"),
+                sales=("sales", "sum"),
+            )
+        )
+
+        rows = grouped.to_dict("records")
+
+        branded_kw_sales = 0.0
+        branded_kw_spend = 0.0
+        branded_kw_clicks = 0.0
+        branded_kw_impressions = 0.0
+
+        return rows + [{
+            "match_type": "Branded KW",
+            "impressions": branded_kw_impressions,
+            "clicks": branded_kw_clicks,
+            "spend": branded_kw_spend,
+            "sales": branded_kw_sales,
+        }]
+
+
+    def build_match_type_inefficient_rows(self, keyword_table):
+        if keyword_table is None or keyword_table.empty:
+            return []
+
+        df = keyword_table.copy()
+
+        if "match_type" not in df.columns:
+            return []
+
+        df["match_type"] = df["match_type"].fillna("").astype(str).str.upper().str.strip()
+
+        inefficient = df[
+            (df["spend"] >= self.min_waste_spend)
+            & (
+                (df["sales"] <= 0)
+                | (df["acos"] > self.high_acos_threshold)
+            )
+        ].copy()
+
+        grouped = (
+            inefficient[inefficient["match_type"].isin(["AUTO", "BROAD", "EXACT", "PHRASE"])]
+            .groupby("match_type", as_index=False)
+            .agg(
+                impressions=("impressions", "sum"),
+                clicks=("clicks", "sum"),
+                spend=("spend", "sum"),
+                sales=("sales", "sum"),
+            )
+        )
+
+        rows = grouped.to_dict("records")
+
+        branded_kw_sales = 0.0
+        branded_kw_spend = 0.0
+        branded_kw_clicks = 0.0
+        branded_kw_impressions = 0.0
+
+        return rows + [{
+            "match_type": "Branded KW",
+            "impressions": branded_kw_impressions,
+            "clicks": branded_kw_clicks,
+            "spend": branded_kw_spend,
+            "sales": branded_kw_sales,
+        }]
+
     # =========================================================
     # LOADERS
     # =========================================================
@@ -467,6 +551,8 @@ class SalesAuditEngine:
         keyword_table = self.build_keyword_spend_table(targeting)
         search_table = self.build_search_term_spend_table(search_terms)
         campaign_summary = self.build_campaign_summary(targeting)
+        match_type_revenue_rows = self.build_match_type_revenue_rows(targeting)
+        match_type_inefficient_rows = self.build_match_type_inefficient_rows(keyword_table)
 
         waste_tables = self.build_waste_tables(keyword_table, search_table)
         waste_summary = self.build_waste_summary(waste_tables, total_spend=kpis["spend"])
@@ -491,6 +577,8 @@ class SalesAuditEngine:
             "winner_tables": winner_tables,
             "health_summary": health_summary,
             "narrative": narrative,
+            "match_type_revenue_rows": match_type_revenue_rows,
+            "match_type_inefficient_rows": match_type_inefficient_rows,
         }
 
     def build_search_term_spend_table(self, search_df):
