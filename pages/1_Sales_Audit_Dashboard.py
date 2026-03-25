@@ -722,6 +722,8 @@ if results:
                     waste_summary=waste_summary,
                     match_type_revenue_rows=results.get("match_type_revenue_rows", []),
                     match_type_inefficient_rows=results.get("match_type_inefficient_rows", []),
+                    campaign_rows=df_to_records(campaign_summary),
+                    campaign_type_rows=results.get("campaign_type_rows", []),
                 )
 
                 st.success("Branded Google Sheet report created successfully.")
