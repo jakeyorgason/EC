@@ -143,19 +143,50 @@ def normalize_records_for_sheet(df: pd.DataFrame) -> list[dict]:
     out = out.replace({pd.NA: None})
     out = out.where(pd.notnull(out), None)
 
+    def parse_numeric_like(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return value
+
+        text = str(value).strip()
+        if text == "":
+            return None
+
+        negative = text.startswith("(") and text.endswith(")")
+        text = text.replace("(", "").replace(")", "")
+        text = text.replace("$", "").replace(",", "").replace("%", "").strip()
+
+        try:
+            num = float(text)
+            return -num if negative else num
+        except ValueError:
+            return value
+
     for col in out.columns:
         col_l = str(col).lower().strip()
 
+        # Parse values like "$123.45" or "12.34%"
+        out[col] = out[col].map(parse_numeric_like)
+
         if col_l in {"ctr", "cvr", "acos", "acos_pct"}:
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+
+        elif col_l in {"roas"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+
         elif col_l in {"cpc"}:
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+
+        elif col_l in {"spend", "sales", "ad_sales", "total_sales", "organic_sales", "ntb_sales"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
+
+        elif col_l in {"impressions", "clicks", "orders", "units_ordered", "sessions", "ntb_orders"}:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: int(round(float(x))))
+
         elif "pct" in col_l or "percent" in col_l:
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
-        elif col_l in {"spend", "sales", "ad_sales", "total_sales", "organic_sales"}:
-            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: round(float(x), 2))
-        elif col_l in {"impressions", "clicks", "orders", "units_ordered", "sessions"}:
-            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).map(lambda x: int(round(float(x))))
+
         elif pd.api.types.is_numeric_dtype(out[col]):
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
 
