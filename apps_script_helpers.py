@@ -10,6 +10,8 @@ def create_google_sheet_report(
     waste_summary: dict,
     match_type_revenue_rows: list[dict],
     match_type_inefficient_rows: list[dict],
+    campaign_rows: list[dict],
+    campaign_type_rows: list[dict],
 ):
     webhook_url = st.secrets["APPS_SCRIPT_WEBHOOK_URL"]
     template_id = st.secrets["GOOGLE_SHEETS_TEMPLATE_ID"]
@@ -25,6 +27,8 @@ def create_google_sheet_report(
         "wasteSummary": waste_summary,
         "matchTypeRevenueRows": match_type_revenue_rows,
         "matchTypeInefficientRows": match_type_inefficient_rows,
+        "campaignRows": campaign_rows,
+        "campaignTypeRows": campaign_type_rows,
     }
 
     response = requests.post(webhook_url, json=payload, timeout=180)
