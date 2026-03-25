@@ -2,7 +2,19 @@ import requests
 import streamlit as st
 
 
-def create_google_sheet_from_template(report_name: str):
+def create_google_sheet_report(
+    brand_name: str,
+    report_name: str,
+    kpi_summary: dict,
+    waste_summary: dict,
+    match_type_revenue_rows: list[dict],
+    match_type_inefficient_rows: list[dict],
+    top_spenders: list[dict],
+    waste_rows: list[dict],
+    winner_rows: list[dict],
+    targeting_rows: list[dict],
+    search_term_rows: list[dict],
+):
     webhook_url = st.secrets["APPS_SCRIPT_WEBHOOK_URL"]
     template_id = st.secrets["GOOGLE_SHEETS_TEMPLATE_ID"]
     destination_folder_id = st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
@@ -11,9 +23,19 @@ def create_google_sheet_from_template(report_name: str):
         "templateId": template_id,
         "destinationFolderId": destination_folder_id,
         "reportName": report_name,
+        "brandName": brand_name,
+        "kpiSummary": kpi_summary,
+        "wasteSummary": waste_summary,
+        "matchTypeRevenueRows": match_type_revenue_rows,
+        "matchTypeInefficientRows": match_type_inefficient_rows,
+        "topSpenders": top_spenders,
+        "wasteRows": waste_rows,
+        "winnerRows": winner_rows,
+        "targetingRows": targeting_rows,
+        "searchTermRows": search_term_rows,
     }
 
-    response = requests.post(webhook_url, json=payload, timeout=60)
+    response = requests.post(webhook_url, json=payload, timeout=120)
     response.raise_for_status()
 
     data = response.json()
