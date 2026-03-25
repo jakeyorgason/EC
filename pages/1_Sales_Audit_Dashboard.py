@@ -482,27 +482,49 @@ u3, u4 = st.columns(2)
 u5, _ = st.columns([1, 1])
 
 with u1:
-    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx", "xls", "csv"], key="sales_audit_bulk_file")
+    bulk_file = st.file_uploader(
+        "Bulk Sheet",
+        type=["xlsx", "xls", "csv"],
+        key="sales_audit_bulk_file",
+    )
 
 with u2:
-    impression_share_file = st.file_uploader("Impression Share Report", type=["csv", "xlsx", "xls"], key="sales_audit_impression_share_file")
+    impression_share_file = st.file_uploader(
+        "Impression Share Report",
+        type=["csv", "xlsx", "xls"],
+        key="sales_audit_impression_share_file",
+    )
 
 with u3:
-    targeting_file = st.file_uploader("Targeting Report", type=["csv", "xlsx", "xls"], key="sales_audit_targeting_file")
+    targeting_file = st.file_uploader(
+        "Targeting Report",
+        type=["csv", "xlsx", "xls"],
+        key="sales_audit_targeting_file",
+    )
 
 with u4:
-    search_term_file = st.file_uploader("Search Term Report", type=["csv", "xlsx", "xls"], key="sales_audit_search_term_file")
+    search_term_file = st.file_uploader(
+        "Search Term Report",
+        type=["csv", "xlsx", "xls"],
+        key="sales_audit_search_term_file",
+    )
 
 with u5:
-    business_report_file = st.file_uploader("Sales & Traffic Business Report", type=["csv", "xlsx", "xls"], key="sales_audit_business_report_file")
+    business_report_file = st.file_uploader(
+        "Sales & Traffic Business Report",
+        type=["csv", "xlsx", "xls"],
+        key="sales_audit_business_report_file",
+    )
 
-required_ready = all([
-    bulk_file is not None,
-    impression_share_file is not None,
-    targeting_file is not None,
-    search_term_file is not None,
-    business_report_file is not None,
-])
+required_ready = all(
+    [
+        bulk_file is not None,
+        impression_share_file is not None,
+        targeting_file is not None,
+        search_term_file is not None,
+        business_report_file is not None,
+    ]
+)
 
 st.markdown(
     f'<div class="upload-note">Status: {"Ready to run" if required_ready else "Waiting on all 5 required uploads"}</div>',
@@ -574,6 +596,7 @@ if results:
     if brand_name:
         st.markdown(f"### {brand_name} Sales Audit")
 
+    # Health summary
     st.markdown('<div class="section-title">Account Health Verdict</div>', unsafe_allow_html=True)
 
     status = health_summary.get("status", "Unknown")
@@ -595,6 +618,7 @@ if results:
         unsafe_allow_html=True,
     )
 
+    # KPI cards
     st.markdown('<div class="section-title">Executive KPI Snapshot</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Top-level account performance, blending ad efficiency with total business sales.</div>',
@@ -634,6 +658,7 @@ if results:
             small=True,
         )
 
+    # Top spenders
     st.markdown('<div class="section-title">Top Spenders</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Prospect-facing view of the biggest spend drivers.</div>',
@@ -641,12 +666,14 @@ if results:
     )
 
     c1, c2 = st.columns(2)
+
     with c1:
         st.markdown("**Top Keyword / Target Spenders**")
         if not top_kw.empty:
             st.dataframe(top_kw, use_container_width=True)
         else:
             st.info("No keyword/target spend table available.")
+
     with c2:
         st.markdown("**Top Customer Search Term Spenders**")
         if not top_st.empty:
@@ -654,6 +681,7 @@ if results:
         else:
             st.info("No customer search term spend table available.")
 
+    # Waste
     st.markdown('<div class="section-title">Waste Snapshot</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Terms with zero sales or ACOS above the threshold.</div>',
@@ -661,13 +689,14 @@ if results:
     )
 
     waste_left, waste_right = st.columns(2)
+
     with waste_left:
         st.markdown("**Keyword / Target Waste**")
-    waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates().head(20)
-    if not waste_kw_combined.empty:
-        st.dataframe(waste_kw_combined, use_container_width=True)
-    else:
-        st.info("No keyword/target waste found.")
+        waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates().head(20)
+        if not waste_kw_combined.empty:
+            st.dataframe(waste_kw_combined, use_container_width=True)
+        else:
+            st.info("No keyword/target waste found.")
 
     with waste_right:
         st.markdown("**Customer Search Term Waste**")
@@ -677,6 +706,7 @@ if results:
         else:
             st.info("No customer search term waste found.")
 
+    # Winners
     st.markdown('<div class="section-title">Winning Terms</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Terms meeting the order floor and staying at or below the winner ACOS threshold.</div>',
@@ -684,6 +714,7 @@ if results:
     )
 
     w1, w2 = st.columns(2)
+
     with w1:
         st.markdown("**Winning Keyword / Targets**")
         if not kw_winners.empty:
@@ -698,12 +729,14 @@ if results:
         else:
             st.info("No winning customer search terms found.")
 
+    # Campaign summary
     with st.expander("Campaign Summary", expanded=False):
         if not campaign_view.empty:
             st.dataframe(campaign_view, use_container_width=True)
         else:
             st.info("No campaign summary available.")
 
+    # Google Sheet report
     st.markdown('<div class="section-title">Create Branded Google Sheet Report</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Creates a branded Google Sheets audit report in your Sales Audits folder.</div>',
@@ -723,8 +756,7 @@ if results:
                 st.error("Please enter a Brand Name before creating the Google Sheet report.")
             else:
                 date_range_label = (results.get("date_range_label") or "").strip() or "MM/DD - MM/DD"
-
-                                waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
+                waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
                 waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates()
 
                 created_report = create_google_sheet_report(
@@ -752,6 +784,7 @@ if results:
         except Exception as exc:
             st.error(f"Google Sheet report creation failed: {exc}")
 
+    # Export workbook
     st.markdown('<div class="section-title">Export Audit Workbook</div>', unsafe_allow_html=True)
 
     export_sheets = {
@@ -775,5 +808,6 @@ if results:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+
 else:
     st.info("Upload the five required files, then click Run Sales Audit.")
