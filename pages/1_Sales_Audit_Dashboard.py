@@ -765,26 +765,32 @@ if results:
         '<div class="section-note">Terms with zero sales or ACOS above the threshold.</div>',
         unsafe_allow_html=True,
     )
-
+    
+    waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
+    if not waste_kw_combined.empty and "spend" in waste_kw_combined.columns:
+        waste_kw_combined = waste_kw_combined[
+            waste_kw_combined["spend"].map(_spend_to_float) >= 0.01
+        ].copy()
+    waste_kw_combined = waste_kw_combined.head(20)
+    
+    waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates()
+    if not waste_st_combined.empty and "spend" in waste_st_combined.columns:
+        waste_st_combined = waste_st_combined[
+            waste_st_combined["spend"].map(_spend_to_float) >= 0.01
+        ].copy()
+    waste_st_combined = waste_st_combined.head(20)
+    
     waste_left, waste_right = st.columns(2)
-
+    
     with waste_left:
         st.markdown("**Keyword / Target Waste**")
-        waste_kw_combined = pd.concat([kw_zero, kw_high], ignore_index=True).drop_duplicates()
-        if not waste_kw_combined.empty and "spend" in waste_kw_combined.columns:
-            waste_kw_combined = waste_kw_combined[
-                waste_kw_combined["spend"].map(_spend_to_float) >= 0.01
-            ].copy()
-        waste_kw_combined = waste_kw_combined.head(20)
-
+        if not waste_kw_combined.empty:
+            st.dataframe(waste_kw_combined, use_container_width=True)
+        else:
+            st.info("No keyword/target waste found.")
+    
     with waste_right:
         st.markdown("**Customer Search Term Waste**")
-        waste_st_combined = pd.concat([st_zero, st_high], ignore_index=True).drop_duplicates()
-        if not waste_st_combined.empty and "spend" in waste_st_combined.columns:
-            waste_st_combined = waste_st_combined[
-                waste_st_combined["spend"].map(_spend_to_float) >= 0.01
-            ].copy()
-        waste_st_combined = waste_st_combined.head(20)
         if not waste_st_combined.empty:
             st.dataframe(waste_st_combined, use_container_width=True)
         else:
