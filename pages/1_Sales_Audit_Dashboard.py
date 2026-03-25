@@ -531,7 +531,7 @@ with s3:
         "Minimum Spend to Flag Waste",
         min_value=0.0,
         max_value=1000.0,
-        value=0.0,
+        value=0.01,
         step=5.0,
     )
 
