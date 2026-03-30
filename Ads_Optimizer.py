@@ -946,7 +946,7 @@ with st.sidebar:
     st.markdown("## Optional uploads")
     st.markdown(
         """
-- Seller Central Business Report for TACOS control  
+- Seller Central Business Report for TACOS control  (**Sales and Traffic** report only)
 - Search Query Performance Report (**Simple View**, **prior month only**)
 """
     )
