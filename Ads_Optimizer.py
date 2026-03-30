@@ -971,7 +971,7 @@ with st.sidebar:
 
     if enable_ai_review:
         st.caption("AI automatically reviews low-confidence actions and improves the final output.")
-        st.caption(f"AI Model: {get_openai_model()}")
+            st.caption(f"AI Model: {get_openai_model()}")
 
     api_key_present = bool(get_openai_api_key())
     if enable_ai_review and not api_key_present:
