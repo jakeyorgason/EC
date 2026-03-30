@@ -120,13 +120,33 @@ def get_openai_client() -> Optional[OpenAI]:
     return OpenAI(api_key=api_key)
 
 
-def get_openai_model() -> str:
+def get_openai_model_candidates() -> list[str]:
+    preferred = []
+
     try:
         if "OPENAI_MODEL" in st.secrets and st.secrets["OPENAI_MODEL"]:
-            return st.secrets["OPENAI_MODEL"]
+            preferred.append(str(st.secrets["OPENAI_MODEL"]).strip())
     except Exception:
         pass
-    return os.getenv("OPENAI_MODEL", "gpt-4o")
+
+    env_model = os.getenv("OPENAI_MODEL", "").strip()
+    if env_model:
+        preferred.append(env_model)
+
+    fallback_models = [
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-4o",
+    ]
+
+    seen = set()
+    ordered = []
+    for model in preferred + fallback_models:
+        if model and model not in seen:
+            ordered.append(model)
+            seen.add(model)
+
+    return ordered
 
 
 def normalize_match_text(value: Any) -> str:
@@ -270,7 +290,7 @@ def build_narrative(
 # AI Override Layer
 # =========================================================
 @st.cache_data(show_spinner=False, ttl=900)
-def run_ai_review_cached(payload_json: str, model: str) -> dict:
+def run_ai_review_cached(payload_json: str) -> dict:
     client = get_openai_client()
     if client is None:
         raise ValueError("OPENAI_API_KEY not found.")
@@ -302,50 +322,102 @@ Rules:
 Return structured JSON only.
 """
 
-    response = client.responses.create(
-        model=model,
-        instructions=instructions,
-        input=payload_json,
-        max_output_tokens=1400,
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "ai_overrides",
-                "schema": {
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "executive_summary": {"type": "string"},
+            "overrides": {
+                "type": "array",
+                "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "executive_summary": {"type": "string"},
-                        "overrides": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "decision": {
-                                        "type": "string",
-                                        "enum": ["KEEP", "MODIFY", "REMOVE"]
-                                    },
-                                    "new_action": {"type": "string"},
-                                    "reason": {"type": "string"}
-                                },
-                                "required": ["id", "decision", "new_action", "reason"]
-                            }
-                        }
+                        "id": {"type": "string"},
+                        "decision": {
+                            "type": "string",
+                            "enum": ["KEEP", "MODIFY", "REMOVE"]
+                        },
+                        "new_action": {"type": "string"},
+                        "reason": {"type": "string"}
                     },
-                    "required": ["executive_summary", "overrides"]
+                    "required": ["id", "decision", "new_action", "reason"]
                 }
             }
-        }
-    )
+        },
+        "required": ["executive_summary", "overrides"]
+    }
 
-    raw_text = (response.output_text or "").strip()
+    last_error = None
 
-    if not raw_text:
-        raise ValueError("OpenAI returned empty response.")
+    for model in get_openai_model_candidates():
+        try:
+            response = client.responses.create(
+                model=model,
+                instructions=instructions,
+                input=payload_json,
+                max_output_tokens=1400,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "ai_overrides",
+                        "schema": schema,
+                    }
+                },
+            )
 
-    return json.loads(raw_text)
+            raw_text = ""
+
+            if hasattr(response, "output_text") and response.output_text:
+                raw_text = str(response.output_text).strip()
+
+            if not raw_text and hasattr(response, "output") and response.output:
+                text_chunks = []
+
+                for item in response.output:
+                    contents = getattr(item, "content", None)
+                    if not contents:
+                        continue
+
+                    for content_item in contents:
+                        text_value = getattr(content_item, "text", None)
+                        if text_value:
+                            if isinstance(text_value, str):
+                                text_chunks.append(text_value)
+                            else:
+                                nested_text = getattr(text_value, "value", None)
+                                if nested_text:
+                                    text_chunks.append(str(nested_text))
+
+                        value_value = getattr(content_item, "value", None)
+                        if value_value:
+                            text_chunks.append(str(value_value))
+
+                raw_text = "\n".join(
+                    [chunk for chunk in text_chunks if str(chunk).strip()]
+                ).strip()
+
+            if not raw_text:
+                raise ValueError(f"{model}: OpenAI returned no readable text content.")
+
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                start = raw_text.find("{")
+                end = raw_text.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    parsed = json.loads(raw_text[start:end + 1])
+                else:
+                    raise ValueError(f"{model}: OpenAI returned non-JSON content.")
+
+            parsed["_model_used"] = model
+            return parsed
+
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise ValueError(f"All AI model fallbacks failed. Last error: {last_error}")
 
 
 def build_ai_action_candidates(
@@ -1494,8 +1566,10 @@ if "last_outputs" in st.session_state:
 
                 ai_response = run_ai_review_cached(
                     payload_json=json.dumps(payload, default=str),
-                    model=get_openai_model(),
                 )
+
+                if ai_impact_summary and ai_response.get("_model_used"):
+                    st.caption(f"AI model used: {ai_response['_model_used']}")
 
                 ai_executive_summary = str(ai_response.get("executive_summary", "")).strip()
 
