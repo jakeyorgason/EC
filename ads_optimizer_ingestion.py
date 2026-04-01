@@ -1380,18 +1380,22 @@ class AdsOptimizerEngine:
             search_term_actions_df["search_term_action"].isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST"])
             & (search_term_actions_df["create_destination_campaign"] == True)
         ].copy()
+    
         if actions.empty:
             return pd.DataFrame()
-
+    
         rows = []
         seen = set()
-
+    
         for _, row in actions.iterrows():
-            campaign_name = str(row["destination_campaign_name"]).strip()
+            campaign_name = str(row.get("destination_campaign_name", "")).strip()
             if campaign_name == "" or campaign_name in seen:
                 continue
             seen.add(campaign_name)
-
+    
+            source_portfolio = str(row.get("source_portfolio_name", "") or "").strip()
+            source_campaign_type = str(row.get("source_campaign_type", "SP") or "SP").strip()
+    
             rows.append(
                 {
                     "Product": "Sponsored Products",
@@ -1402,8 +1406,10 @@ class AdsOptimizerEngine:
                     "Keyword ID": "",
                     "Campaign Name": campaign_name,
                     "Ad Group Name": "",
-                    "Portfolio Name": row.get("source_portfolio_name", ""),
+                    "Portfolio Name": source_portfolio,
                     "State": "Enabled",
+                    "Targeting Type": "Manual",
+                    "Campaign Type": source_campaign_type,
                     "Keyword Text": "",
                     "Match Type": "",
                     "Bid": "",
@@ -1412,50 +1418,64 @@ class AdsOptimizerEngine:
                     "Optimizer Action": "CREATE_CAMPAIGN",
                 }
             )
-
+    
         return pd.DataFrame(rows)
 
     def generate_ad_group_create_bulk_updates(self, search_term_actions_df):
         actions = search_term_actions_df[
             search_term_actions_df["search_term_action"].isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST"])
         ].copy()
+    
         if actions.empty:
             return pd.DataFrame()
-
+    
         rows = []
         seen = set()
-
+    
         for _, row in actions.iterrows():
-            campaign_name = str(row["destination_campaign_name"]).strip()
-            ad_group_name = str(row["destination_ad_group_name"]).strip()
+            campaign_name = str(row.get("destination_campaign_name", "")).strip()
+            ad_group_name = str(row.get("destination_ad_group_name", "")).strip()
+    
             if campaign_name == "" or ad_group_name == "":
                 continue
-
+    
             ad_group_key = self.normalize_match_text(campaign_name) + "||" + self.normalize_match_text(ad_group_name)
             if ad_group_key in seen:
                 continue
-
-            if not self.ad_group_inventory.empty:
-                existing = self.ad_group_inventory[
-                    self.ad_group_inventory["campaign_name"].map(self.normalize_match_text).eq(self.normalize_match_text(campaign_name))
-                    & self.ad_group_inventory["ad_group_name"].map(self.normalize_match_text).eq(self.normalize_match_text(ad_group_name))
+    
+            campaign_id = ""
+            if not self.campaign_inventory.empty:
+                existing_campaign = self.campaign_inventory[
+                    self.campaign_inventory["campaign_name"].map(self.normalize_match_text)
+                    == self.normalize_match_text(campaign_name)
                 ]
-                if not existing.empty:
+                if not existing_campaign.empty:
+                    campaign_id = str(existing_campaign.iloc[0].get("campaign_id", "") or "").strip()
+    
+            if not self.ad_group_inventory.empty:
+                existing_ad_group = self.ad_group_inventory[
+                    (self.ad_group_inventory["campaign_name"].map(self.normalize_match_text) == self.normalize_match_text(campaign_name))
+                    & (self.ad_group_inventory["ad_group_name"].map(self.normalize_match_text) == self.normalize_match_text(ad_group_name))
+                ]
+                if not existing_ad_group.empty:
                     continue
-
+    
             seen.add(ad_group_key)
+    
             rows.append(
                 {
                     "Product": "Sponsored Products",
                     "Entity": "Ad Group",
                     "Operation": "Create",
-                    "Campaign ID": "",
+                    "Campaign ID": campaign_id,
                     "Ad Group ID": "",
                     "Keyword ID": "",
                     "Campaign Name": campaign_name,
                     "Ad Group Name": ad_group_name,
-                    "Portfolio Name": row.get("source_portfolio_name", ""),
+                    "Portfolio Name": str(row.get("source_portfolio_name", "") or "").strip(),
                     "State": "Enabled",
+                    "Targeting Type": "",
+                    "Campaign Type": "",
                     "Keyword Text": "",
                     "Match Type": "",
                     "Bid": round(float(row.get("recommended_bid", 0.5) or 0.5), 2),
@@ -1464,30 +1484,56 @@ class AdsOptimizerEngine:
                     "Optimizer Action": "CREATE_AD_GROUP",
                 }
             )
-
+    
         return pd.DataFrame(rows)
 
     def generate_keyword_graduation_bulk_updates(self, search_term_actions_df):
         actionable = search_term_actions_df[
             search_term_actions_df["search_term_action"].isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE"])
         ].copy()
+    
         if actionable.empty:
             return pd.DataFrame()
-
+    
         rows = []
+    
         for _, row in actionable.iterrows():
+            campaign_name = str(row.get("destination_campaign_name", "")).strip()
+            ad_group_name = str(row.get("destination_ad_group_name", "")).strip()
+    
+            campaign_id = ""
+            ad_group_id = ""
+    
+            if not self.campaign_inventory.empty:
+                campaign_match = self.campaign_inventory[
+                    self.campaign_inventory["campaign_name"].map(self.normalize_match_text)
+                    == self.normalize_match_text(campaign_name)
+                ]
+                if not campaign_match.empty:
+                    campaign_id = str(campaign_match.iloc[0].get("campaign_id", "") or "").strip()
+    
+            if not self.ad_group_inventory.empty:
+                ad_group_match = self.ad_group_inventory[
+                    (self.ad_group_inventory["campaign_name"].map(self.normalize_match_text) == self.normalize_match_text(campaign_name))
+                    & (self.ad_group_inventory["ad_group_name"].map(self.normalize_match_text) == self.normalize_match_text(ad_group_name))
+                ]
+                if not ad_group_match.empty:
+                    ad_group_id = str(ad_group_match.iloc[0].get("ad_group_id", "") or "").strip()
+    
             rows.append(
                 {
                     "Product": "Sponsored Products",
                     "Entity": "Keyword",
                     "Operation": "Create",
-                    "Campaign ID": "",
-                    "Ad Group ID": "",
+                    "Campaign ID": campaign_id,
+                    "Ad Group ID": ad_group_id,
                     "Keyword ID": "",
-                    "Campaign Name": row["destination_campaign_name"],
-                    "Ad Group Name": row["destination_ad_group_name"],
-                    "Portfolio Name": row.get("source_portfolio_name", ""),
+                    "Campaign Name": campaign_name,
+                    "Ad Group Name": ad_group_name,
+                    "Portfolio Name": str(row.get("source_portfolio_name", "") or "").strip(),
                     "State": "Enabled",
+                    "Targeting Type": "",
+                    "Campaign Type": "",
                     "Keyword Text": row["normalized_term"],
                     "Match Type": row["target_match_type"],
                     "Bid": round(float(row["recommended_bid"]), 2),
@@ -1496,27 +1542,54 @@ class AdsOptimizerEngine:
                     "Optimizer Action": row["search_term_action"],
                 }
             )
+    
         return pd.DataFrame(rows)
 
     def generate_product_target_bulk_updates(self, search_term_actions_df):
         actionable = search_term_actions_df[search_term_actions_df["search_term_action"] == "ADD_ASIN_TO_DEST"].copy()
+    
         if actionable.empty:
             return pd.DataFrame()
-
+    
         rows = []
+    
         for _, row in actionable.iterrows():
+            campaign_name = str(row.get("destination_campaign_name", "")).strip()
+            ad_group_name = str(row.get("destination_ad_group_name", "")).strip()
+    
+            campaign_id = ""
+            ad_group_id = ""
+    
+            if not self.campaign_inventory.empty:
+                campaign_match = self.campaign_inventory[
+                    self.campaign_inventory["campaign_name"].map(self.normalize_match_text)
+                    == self.normalize_match_text(campaign_name)
+                ]
+                if not campaign_match.empty:
+                    campaign_id = str(campaign_match.iloc[0].get("campaign_id", "") or "").strip()
+    
+            if not self.ad_group_inventory.empty:
+                ad_group_match = self.ad_group_inventory[
+                    (self.ad_group_inventory["campaign_name"].map(self.normalize_match_text) == self.normalize_match_text(campaign_name))
+                    & (self.ad_group_inventory["ad_group_name"].map(self.normalize_match_text) == self.normalize_match_text(ad_group_name))
+                ]
+                if not ad_group_match.empty:
+                    ad_group_id = str(ad_group_match.iloc[0].get("ad_group_id", "") or "").strip()
+    
             rows.append(
                 {
                     "Product": "Sponsored Products",
                     "Entity": "Product Targeting",
                     "Operation": "Create",
-                    "Campaign ID": "",
-                    "Ad Group ID": "",
+                    "Campaign ID": campaign_id,
+                    "Ad Group ID": ad_group_id,
                     "Keyword ID": "",
-                    "Campaign Name": row["destination_campaign_name"],
-                    "Ad Group Name": row["destination_ad_group_name"],
-                    "Portfolio Name": row.get("source_portfolio_name", ""),
+                    "Campaign Name": campaign_name,
+                    "Ad Group Name": ad_group_name,
+                    "Portfolio Name": str(row.get("source_portfolio_name", "") or "").strip(),
                     "State": "Enabled",
+                    "Targeting Type": "",
+                    "Campaign Type": "",
                     "Keyword Text": "",
                     "Match Type": "",
                     "Bid": round(float(row["recommended_bid"]), 2),
@@ -1525,6 +1598,7 @@ class AdsOptimizerEngine:
                     "Optimizer Action": row["search_term_action"],
                 }
             )
+    
         return pd.DataFrame(rows)
 
     def generate_negative_bulk_updates(self, search_term_actions_df):
@@ -1597,6 +1671,8 @@ class AdsOptimizerEngine:
             "Ad Group Name",
             "Portfolio Name",
             "State",
+            "Targeting Type",
+            "Campaign Type",
             "Keyword Text",
             "Match Type",
             "Bid",
