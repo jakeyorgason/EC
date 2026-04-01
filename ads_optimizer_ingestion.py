@@ -1757,18 +1757,21 @@ class AdsOptimizerEngine:
 
     def build_simulation_summary(self, combined_bulk_updates, account_health):
         df = combined_bulk_updates.copy()
+    
+        action_series = df["Optimizer Action"].fillna("").astype(str).str.strip().str.upper()
+    
         return {
-            "bid_increases": int((df["Optimizer Action"] == "INCREASE_BID").sum()),
-            "bid_decreases": int((df["Optimizer Action"] == "DECREASE_BID").sum()),
-            "negatives_added": int((df["Optimizer Action"] == "ADD_NEGATIVE_EXACT").sum()),
-            "graduations": int(df["Optimizer Action"].isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST"]).sum()),
-            "dest_exact": int((df["Optimizer Action"] == "ADD_TO_DEST_EXACT").sum()),
-            "research_phrase": int((df["Optimizer Action"] == "ADD_TO_RESEARCH_PHRASE").sum()),
-            "asin_dest": int((df["Optimizer Action"] == "ADD_ASIN_TO_DEST").sum()),
-            "campaign_creates": int((df["Optimizer Action"] == "CREATE_CAMPAIGN").sum()),
-            "ad_group_creates": int((df["Optimizer Action"] == "CREATE_AD_GROUP").sum()),
-            "budget_increases": int((df["Optimizer Action"] == "INCREASE_BUDGET").sum()),
-            "budget_decreases": int((df["Optimizer Action"] == "DECREASE_BUDGET").sum()),
+            "bid_increases": int((action_series == "INCREASE_BID").sum()),
+            "bid_decreases": int((action_series == "DECREASE_BID").sum()),
+            "negatives_added": int((action_series == "ADD_NEGATIVE_EXACT").sum()),
+            "graduations": int(action_series.isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST"]).sum()),
+            "dest_exact": int((action_series == "ADD_TO_DEST_EXACT").sum()),
+            "research_phrase": int((action_series == "ADD_TO_RESEARCH_PHRASE").sum()),
+            "asin_dest": int((action_series == "ADD_ASIN_TO_DEST").sum()),
+            "campaign_creates": int((action_series == "CREATE_CAMPAIGN").sum()),
+            "ad_group_creates": int((action_series == "CREATE_AD_GROUP").sum()),
+            "budget_increases": int((action_series == "INCREASE_BUDGET").sum()),
+            "budget_decreases": int((action_series == "DECREASE_BUDGET").sum()),
             "estimated_spend_impact_pct": 0.0,
             "account_roas": account_health.get("account_roas"),
             "tacos_pct": account_health.get("tacos_pct"),
