@@ -1452,6 +1452,10 @@ class AdsOptimizerEngine:
                 if not existing_campaign.empty:
                     campaign_id = str(existing_campaign.iloc[0].get("campaign_id", "") or "").strip()
     
+            # only create ad group if parent campaign already exists
+            if campaign_id == "":
+                continue
+    
             if not self.ad_group_inventory.empty:
                 existing_ad_group = self.ad_group_inventory[
                     (self.ad_group_inventory["campaign_name"].map(self.normalize_match_text) == self.normalize_match_text(campaign_name))
@@ -1478,7 +1482,8 @@ class AdsOptimizerEngine:
                     "Campaign Type": "",
                     "Keyword Text": "",
                     "Match Type": "",
-                    "Bid": round(float(row.get("recommended_bid", 0.5) or 0.5), 2),
+                    "Bid": "",
+                    "Ad Group Default Bid": round(float(row.get("recommended_bid", 0.5) or 0.5), 2),
                     "Daily Budget": "",
                     "Product Targeting Expression": "",
                     "Optimizer Action": "CREATE_AD_GROUP",
@@ -1519,6 +1524,10 @@ class AdsOptimizerEngine:
                 ]
                 if not ad_group_match.empty:
                     ad_group_id = str(ad_group_match.iloc[0].get("ad_group_id", "") or "").strip()
+    
+            # only emit child keyword rows when both IDs already exist
+            if campaign_id == "" or ad_group_id == "":
+                continue
     
             rows.append(
                 {
@@ -1575,6 +1584,10 @@ class AdsOptimizerEngine:
                 ]
                 if not ad_group_match.empty:
                     ad_group_id = str(ad_group_match.iloc[0].get("ad_group_id", "") or "").strip()
+    
+            # only emit child PAT rows when both IDs already exist
+            if campaign_id == "" or ad_group_id == "":
+                continue
     
             rows.append(
                 {
@@ -1676,6 +1689,7 @@ class AdsOptimizerEngine:
             "Keyword Text",
             "Match Type",
             "Bid",
+            "Ad Group Default Bid",
             "Daily Budget",
             "Product Targeting Expression",
             "Optimizer Action",
