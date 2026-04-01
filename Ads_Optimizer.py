@@ -197,7 +197,7 @@ def score_action_confidence(row: dict) -> str:
     if orders >= 3 and roas >= 3:
         return "HIGH"
 
-    if source_type in {"search_harvest", "negative_keyword"} and clicks < 12:
+    if source_type in {"graduation", "negative_keyword"} and clicks < 12:
         return "LOW"
 
     if source_type == "budget" and clicks < 25:
@@ -265,14 +265,19 @@ def build_narrative(
             f"{simulation_summary['bid_increases']} bid increases were generated for strong-performing targets with scaling headroom."
         )
 
-    if simulation_summary.get("harvested_keywords", 0) > 0:
+    graduation_total = (
+        get_int(simulation_summary.get("dest_exact_adds"))
+        + get_int(simulation_summary.get("research_phrase_adds"))
+        + get_int(simulation_summary.get("asin_target_adds"))
+    )
+    if graduation_total > 0:
         notes.append(
-            f"{simulation_summary['harvested_keywords']} search terms were harvested into Exact keywords based on conversion and efficiency thresholds."
+            f"{graduation_total} search-term graduations were created across Dest Exact, Research Phrase, and ASIN destination actions."
         )
 
-    if simulation_summary.get("negatives_added", 0) > 0:
+    if simulation_summary.get("negative_exact_adds", 0) > 0:
         notes.append(
-            f"{simulation_summary['negatives_added']} negative phrases were added to reduce wasted clicks from unproductive traffic."
+            f"{simulation_summary['negative_exact_adds']} negative exacts were added to clean up source ad groups and reduce wasted traffic."
         )
 
     if simulation_summary.get("budget_increases", 0) > 0 or simulation_summary.get("budget_decreases", 0) > 0:
@@ -312,8 +317,8 @@ Rules:
 - Do not invent data.
 - For bid actions, new_action may only be: INCREASE_BID, DECREASE_BID, or NO_ACTION.
 - For budget actions, new_action may only be: INCREASE_BUDGET, DECREASE_BUDGET, or NO_ACTION.
-- For harvest actions, new_action may only be: HARVEST_TO_EXACT or NO_ACTION.
-- For negative keyword actions, new_action may only be: ADD_NEGATIVE_PHRASE or NO_ACTION.
+- For graduation actions, new_action may only be: ADD_TO_DEST_EXACT, ADD_TO_RESEARCH_PHRASE, ADD_ASIN_TO_DEST, NEGATE_SOURCE_ONLY, ADD_NEGATIVE_EXACT, or NO_ACTION.
+- For negative keyword actions, new_action may only be: ADD_NEGATIVE_EXACT or NO_ACTION.
 - If decision is KEEP, set new_action to an empty string.
 - If decision is REMOVE, set new_action to an empty string.
 - If decision is MODIFY, you must supply new_action.
@@ -446,7 +451,7 @@ def build_ai_action_candidates(
         search["_campaign_key"] = search["campaign_name"].map(normalize_match_text)
         search["_ad_group_key"] = search["ad_group_name"].map(normalize_match_text)
         search["_term_key"] = search["search_term"].map(normalize_term_text)
-        search["_action_key"] = search["search_term_action"].astype(str).str.upper()
+        search["_action_key"] = search["optimizer_action"].astype(str).str.upper()
 
     if not budget.empty:
         budget["_campaign_key"] = budget["campaign_name"].map(normalize_match_text)
@@ -509,7 +514,7 @@ def build_ai_action_candidates(
                     }
                 )
 
-        elif optimizer_action in {"HARVEST_TO_EXACT", "ADD_NEGATIVE_PHRASE"} and not search.empty:
+        elif optimizer_action in {"ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST", "NEGATE_SOURCE_ONLY", "ADD_NEGATIVE_EXACT"} and not search.empty:
             match = search[
                 (search["_campaign_key"] == campaign_key)
                 & (search["_ad_group_key"] == ad_group_key)
@@ -519,7 +524,7 @@ def build_ai_action_candidates(
 
             if not match.empty:
                 m = match.iloc[0]
-                source_type = "search_harvest" if optimizer_action == "HARVEST_TO_EXACT" else "negative_keyword"
+                source_type = "negative_keyword" if optimizer_action == "ADD_NEGATIVE_EXACT" else "graduation"
                 candidate.update(
                     {
                         "source_type": source_type,
@@ -681,10 +686,10 @@ def apply_ai_overrides_to_combined(
                         new_budget = round(max(current_budget * (1 - strategy["budget_down_pct"]), 1.00), 2)
                     row_dict["Daily Budget"] = new_budget
 
-                elif source_type == "search_harvest" and new_action == "HARVEST_TO_EXACT":
+                elif source_type == "graduation" and new_action in {"ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST", "NEGATE_SOURCE_ONLY"}:
                     final_action = new_action
 
-                elif source_type == "negative_keyword" and new_action == "ADD_NEGATIVE_PHRASE":
+                elif source_type == "negative_keyword" and new_action == "ADD_NEGATIVE_EXACT":
                     final_action = new_action
 
                 else:
@@ -924,8 +929,8 @@ with st.sidebar:
         """
 **What this tool does**
 - Adjusts bids
-- Harvests winning search terms into Exact matches
-- Adds negative phrases for wasted traffic
+- Graduates winning search terms into Dest / Research actions
+- Adds negative exacts for losers and source cleanup
 - Adjusts campaign daily budgets
 - Optionally enforces TACOS and monthly pacing guardrails
 - Optionally uses prior-month SQP Simple View for keyword opportunity context
@@ -956,7 +961,7 @@ with st.sidebar:
     st.markdown(
         """
 - Start with **Balanced**
-- Use **Losing KW Action = Both**
+- Review the graduation preview before downloading
 - Use monthly pacing only for budget-sensitive clients
 - Upload prior-month SQP only in **Simple View**
 - Review diagnostics before running
@@ -1080,7 +1085,7 @@ with core1:
     enable_bid_updates = st.checkbox("Bid Updates", value=True)
 
 with core2:
-    enable_search_harvesting = st.checkbox("Search Harvesting", value=True)
+    enable_search_harvesting = st.checkbox("Keyword Graduation", value=True)
 
 with core3:
     enable_negative_keywords = st.checkbox("Negative Keywords", value=True)
@@ -1402,9 +1407,9 @@ if diagnostics is not None:
     with pr2:
         render_metric_card("Bid Decreases", str(get_int(preview.get("bid_decreases"))), tone="warn")
     with pr3:
-        render_metric_card("Negatives", str(get_int(preview.get("negatives_added"))), tone="warn")
+        render_metric_card("Neg. Exacts", str(get_int(preview.get("negative_exacts"))), tone="warn")
     with pr4:
-        render_metric_card("Harvests", str(get_int(preview.get("harvested_keywords"))), tone="good")
+        render_metric_card("Graduations", str(get_int(preview.get("graduations"))), tone="good")
     with pr5:
         render_metric_card("Budget Increases", str(get_int(preview.get("budget_increases"))), tone="good")
     with pr6:
@@ -1449,33 +1454,19 @@ if diagnostics is not None:
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-title">What This Run Is Allowed To Do</div>', unsafe_allow_html=True)
 
-if losing_kw_action == "Decrease Bid":
-    losing_kw_description = (
-        f"If a keyword or target reaches **{losing_kw_click_threshold} clicks and 0 orders**, "
-        f"the app will **decrease the bid**. It will **not add a negative keyword** from that rule."
-    )
-elif losing_kw_action == "Add Negative":
-    losing_kw_description = (
-        f"If a search term reaches **{losing_kw_click_threshold} clicks and 0 orders**, "
-        f"the app will **add a Negative Phrase keyword**. It will **not decrease the bid** from that rule."
-    )
-elif losing_kw_action == "Both":
-    losing_kw_description = (
-        f"If performance reaches **{losing_kw_click_threshold} clicks and 0 orders**, "
-        f"the app may **decrease the bid** and **add a Negative Phrase keyword**, depending on the data source."
-    )
-else:
-    losing_kw_description = (
-        f"If performance reaches **{losing_kw_click_threshold} clicks and 0 orders**, "
-        f"the app will **take no Losing KW Action**."
-    )
+losing_kw_description = (
+    f"If a search term has more than **{losing_kw_click_threshold} clicks**, **CTR below 0.25%**, and **CVR below 5%**, "
+    f"the app will add a **Negative Exact** in the source ad group."
+)
 
 st.markdown(f"- {losing_kw_description}")
 st.markdown(
     f"- If a target falls below **ROAS {min_roas:.1f}** and has at least **{min_clicks} clicks**, the app may **decrease the bid**."
 )
 st.markdown("- If a target materially exceeds your ROAS goal, the app may **increase the bid**.")
-st.markdown("- Search term harvesting creates **Exact keywords** at the ad group level.")
+st.markdown("- Proven winners can be routed to **Dest Exact**, **Research Phrase**, or **ASIN Targets** in a Dest campaign.")
+st.markdown("- Whenever a term is graduated into a new campaign or ad group, the app also adds a **Negative Exact** to the source ad group.")
+st.markdown("- Missing Dest or Research campaigns can be created automatically when routing is reliable from the parent group.")
 st.markdown("- Budget updates apply at the campaign daily budget level, not the account level.")
 st.markdown("- Prior-month SQP Simple View, when uploaded, is used only for keyword opportunity context and AI guidance, not direct execution logic.")
 
@@ -1608,9 +1599,9 @@ if "last_outputs" in st.session_state:
     with summary2:
         render_metric_card("Bid Decreases", str(get_int(simulation_summary.get("bid_decreases"))), tone="warn")
     with summary3:
-        render_metric_card("Negatives", str(get_int(simulation_summary.get("negatives_added"))), tone="warn")
+        render_metric_card("Neg. Exacts", str(get_int(simulation_summary.get("negative_exact_adds"))), tone="warn")
     with summary4:
-        render_metric_card("Harvests", str(get_int(simulation_summary.get("harvested_keywords"))), tone="good")
+        render_metric_card("Graduations", str(get_int(simulation_summary.get("dest_exact_adds")) + get_int(simulation_summary.get("research_phrase_adds")) + get_int(simulation_summary.get("asin_target_adds"))), tone="good")
     with summary5:
         render_metric_card("Budget Increases", str(get_int(simulation_summary.get("budget_increases"))), tone="good")
     with summary6:
