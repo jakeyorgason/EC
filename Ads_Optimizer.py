@@ -201,7 +201,7 @@ def build_narrative(
         notes.append(f"{simulation_summary['bid_increases']} bid increases were generated for strong-performing targets.")
     found_graduations = simulation_summary.get("graduation_opportunities", simulation_summary.get("graduations", 0))
     ready_graduations = simulation_summary.get("graduations", 0)
-
+    
     if found_graduations > 0:
         if found_graduations == ready_graduations:
             notes.append(
@@ -729,37 +729,127 @@ with r1c3:
     strategy_mode = st.selectbox("Strategy Mode", options=["Conservative", "Balanced", "Aggressive"], index=1)
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-st.markdown('<div class="section-title">Graduation Rules</div>', unsafe_allow_html=True)
 
-g1, g2, g3, g4 = st.columns(4)
-with g1:
-    min_orders_for_graduation = st.number_input("Min Orders for Graduation", min_value=1, max_value=20, value=2, step=1)
-with g2:
-    dest_acos_threshold = st.number_input("Dest ACOS % Threshold", min_value=1.0, max_value=100.0, value=25.0, step=0.5)
-with g3:
-    research_ctr_low_pct = st.number_input("Research CTR Low %", min_value=0.01, max_value=5.0, value=0.10, step=0.01)
-with g4:
-    research_ctr_high_pct = st.number_input("Research CTR High %", min_value=0.01, max_value=5.0, value=0.25, step=0.01)
+with st.expander("Graduation Rules", expanded=False):
+    st.markdown(
+        """
+Configure how the optimizer decides whether a search term should:
+- graduate into Dest Exact
+- route into Research Phrase
+- be negated as a loser
+- or create missing destination structure
+"""
+    )
 
-g5, g6, g7, g8 = st.columns(4)
-with g5:
-    research_cvr_low_pct = st.number_input("Research CVR Low %", min_value=0.1, max_value=20.0, value=2.0, step=0.1)
-with g6:
-    research_cvr_high_pct = st.number_input("Research CVR High %", min_value=0.1, max_value=20.0, value=5.0, step=0.1)
-with g7:
-    loser_clicks_threshold = st.number_input("Loser Click Threshold", min_value=1, max_value=100, value=5, step=1)
-with g8:
-    loser_ctr_threshold_pct = st.number_input("Loser CTR Max %", min_value=0.01, max_value=10.0, value=0.25, step=0.01)
+    g1, g2 = st.columns(2)
+    with g1:
+        min_orders_for_graduation = st.number_input(
+            "Min Orders for Graduation",
+            min_value=1,
+            max_value=20,
+            value=2,
+            step=1,
+            help="Minimum attributed orders required before a search term or ASIN can be considered for graduation."
+        )
+        dest_acos_threshold = st.number_input(
+            "Dest ACOS % Threshold",
+            min_value=1.0,
+            max_value=100.0,
+            value=25.0,
+            step=0.5,
+            help="Terms at or below this ACOS threshold qualify for Dest Exact when they also meet the order rule."
+        )
+        create_missing_dest_campaigns = st.checkbox(
+            "Create Missing Dest / Research",
+            value=True,
+            help="If enabled, the optimizer will output campaign/ad group structure rows when the required Dest or Research destination does not already exist."
+        )
 
-g9, g10, g11, g12 = st.columns(4)
-with g9:
-    loser_cvr_threshold_pct = st.number_input("Loser CVR Max %", min_value=0.1, max_value=20.0, value=5.0, step=0.1)
-with g10:
-    new_target_bid_multiplier = st.number_input("New Target Bid Multiplier", min_value=1.0, max_value=3.0, value=1.10, step=0.01)
-with g11:
-    new_target_bid_cap = st.number_input("New Target Bid Cap", min_value=0.1, max_value=10.0, value=1.0, step=0.05)
-with g12:
-    create_missing_dest_campaigns = st.checkbox("Create Missing Dest / Research", value=True)
+    with g2:
+        new_target_bid_multiplier = st.number_input(
+            "New Target Bid Multiplier",
+            min_value=1.0,
+            max_value=3.0,
+            value=1.10,
+            step=0.01,
+            help="Starting bid for new graduated keywords/ASIN targets is current CPC multiplied by this value."
+        )
+        new_target_bid_cap = st.number_input(
+            "New Target Bid Cap",
+            min_value=0.1,
+            max_value=10.0,
+            value=1.0,
+            step=0.05,
+            help="Maximum starting bid allowed for newly created Dest / Research / ASIN targets."
+        )
+
+    st.markdown("#### Research routing")
+    r1, r2 = st.columns(2)
+    with r1:
+        research_ctr_low_pct = st.number_input(
+            "Research CTR Low %",
+            min_value=0.01,
+            max_value=5.0,
+            value=0.10,
+            step=0.01,
+            help="Lower CTR bound for routing a converting term into Research Phrase instead of Dest Exact."
+        )
+        research_ctr_high_pct = st.number_input(
+            "Research CTR High %",
+            min_value=0.01,
+            max_value=5.0,
+            value=0.25,
+            step=0.01,
+            help="Upper CTR bound for Research Phrase routing."
+        )
+
+    with r2:
+        research_cvr_low_pct = st.number_input(
+            "Research CVR Low %",
+            min_value=0.1,
+            max_value=20.0,
+            value=2.0,
+            step=0.1,
+            help="Lower conversion-rate bound for Research Phrase routing."
+        )
+        research_cvr_high_pct = st.number_input(
+            "Research CVR High %",
+            min_value=0.1,
+            max_value=20.0,
+            value=5.0,
+            step=0.1,
+            help="Upper conversion-rate bound for Research Phrase routing."
+        )
+
+    st.markdown("#### Loser cleanup")
+    l1, l2 = st.columns(2)
+    with l1:
+        loser_clicks_threshold = st.number_input(
+            "Loser Click Threshold",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+            help="Minimum clicks before a low-quality term becomes eligible for Negative Exact cleanup."
+        )
+        loser_ctr_threshold_pct = st.number_input(
+            "Loser CTR Max %",
+            min_value=0.01,
+            max_value=10.0,
+            value=0.25,
+            step=0.01,
+            help="Terms below this CTR and below the CVR threshold can be negated once the click threshold is met."
+        )
+
+    with l2:
+        loser_cvr_threshold_pct = st.number_input(
+            "Loser CVR Max %",
+            min_value=0.1,
+            max_value=20.0,
+            value=5.0,
+            step=0.1,
+            help="Terms below this conversion rate and below the CTR threshold can be negated once the click threshold is met."
+        )
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-title">Optimization Actions</div>', unsafe_allow_html=True)
@@ -1001,6 +1091,44 @@ if "last_outputs" in st.session_state:
     outputs = safe_dict(st.session_state["last_outputs"])
 
     combined_bulk_updates = safe_df(outputs.get("combined_bulk_updates"))
+
+    preview_summary = safe_dict(outputs.get("pre_run_preview"))
+    
+    simulation_summary["graduation_opportunities"] = int(preview_summary.get("graduations", 0))
+    
+    dest_structure_upload = combined_bulk_updates[
+        combined_bulk_updates["Optimizer Action"].isin(["CREATE_CAMPAIGN", "CREATE_AD_GROUP"])
+    ].copy()
+    
+    dest_structure_upload = dest_structure_upload[
+        dest_structure_upload["Campaign Name"].fillna("").astype(str).str.contains("Dest|Destination|Research", case=False, regex=True)
+    ].copy()
+    
+    deferred_graduations = search_term_actions[
+        search_term_actions["search_term_action"].isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST"])
+    ].copy()
+    
+    ready_terms = set(
+        combined_bulk_updates.loc[
+            combined_bulk_updates["Optimizer Action"].isin(["ADD_TO_DEST_EXACT", "ADD_TO_RESEARCH_PHRASE", "ADD_ASIN_TO_DEST"]),
+            "Keyword Text"
+        ].fillna("").astype(str).str.lower().str.strip().tolist()
+    )
+    
+    ready_asins = set(
+        combined_bulk_updates.loc[
+            combined_bulk_updates["Optimizer Action"] == "ADD_ASIN_TO_DEST",
+            "Product Targeting Expression"
+        ].fillna("").astype(str).str.lower().str.strip().tolist()
+    )
+    
+    deferred_graduations = deferred_graduations[
+        ~(
+            deferred_graduations["normalized_term"].fillna("").astype(str).str.lower().str.strip().isin(ready_terms)
+            | deferred_graduations["product_expression"].fillna("").astype(str).str.lower().str.strip().isin(ready_asins)
+        )
+    ].copy()
+    
     bid_recommendations = safe_df(outputs.get("bid_recommendations"))
     search_term_actions = safe_df(outputs.get("search_term_actions"))
     campaign_budget_actions = safe_df(outputs.get("campaign_budget_actions"))
@@ -1133,6 +1261,8 @@ if "last_outputs" in st.session_state:
 
     tabs = st.tabs([
         "Amazon Bulk Upload",
+        "Dest Structure Builder",
+        "Deferred Graduations",
         "Bid Recommendations",
         "Search Term Actions",
         "Budget Actions",
@@ -1149,42 +1279,54 @@ if "last_outputs" in st.session_state:
             st.info("No bulk upload output available.")
 
     with tabs[1]:
+        if not dest_structure_upload.empty:
+            st.dataframe(dest_structure_upload, use_container_width=True)
+        else:
+            st.info("No missing Dest / Research structure needs to be created.")
+    
+    with tabs[2]:
+        if not deferred_graduations.empty:
+            st.dataframe(deferred_graduations, use_container_width=True)
+        else:
+            st.info("No deferred graduations for this run.")        
+
+    with tabs[3]:
         if not bid_recommendations.empty:
             st.dataframe(bid_recommendations, use_container_width=True)
         else:
             st.info("No bid recommendations available.")
 
-    with tabs[2]:
+    with tabs[4]:
         if not search_term_actions.empty:
             st.dataframe(search_term_actions, use_container_width=True)
         else:
             st.info("No search term actions available.")
 
-    with tabs[3]:
+    with tabs[5]:
         if not campaign_budget_actions.empty:
             st.dataframe(campaign_budget_actions, use_container_width=True)
         else:
             st.info("No campaign budget actions available.")
 
-    with tabs[4]:
+    with tabs[6]:
         if not output_campaign_health_dashboard.empty:
             st.dataframe(output_campaign_health_dashboard, use_container_width=True)
         else:
             st.info("No campaign health table available.")
 
-    with tabs[5]:
+    with tabs[7]:
         if not output_sqp_opportunities.empty:
             st.dataframe(output_sqp_opportunities, use_container_width=True)
         else:
             st.info("No SQP opportunities available.")
 
-    with tabs[6]:
+    with tabs[8]:
         if not ai_override_log_df.empty:
             st.dataframe(ai_override_log_df, use_container_width=True)
         else:
             st.info("No AI override log available for this run.")
 
-    with tabs[7]:
+    with tabs[9]:
         if not run_history.empty:
             st.dataframe(run_history, use_container_width=True)
         else:
@@ -1193,7 +1335,7 @@ if "last_outputs" in st.session_state:
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Downloads</div>', unsafe_allow_html=True)
 
-    d1, d2, d3, d4 = st.columns(4)
+    d1, d2, d3, d4, d5, d6 = st.columns(6)
     with d1:
         st.download_button(
             label="Download Amazon Bulk Upload",
@@ -1226,3 +1368,21 @@ if "last_outputs" in st.session_state:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+
+    with d5:
+        st.download_button(
+            label="Download Dest Structure Builder",
+            data=to_excel_bytes(dest_structure_upload),
+            file_name="dest_structure_builder.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    
+    with d6:
+        st.download_button(
+            label="Download Deferred Graduations",
+            data=to_excel_bytes(deferred_graduations),
+            file_name="deferred_graduations.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )    
