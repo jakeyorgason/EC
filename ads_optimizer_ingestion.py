@@ -70,38 +70,38 @@ class AdsOptimizerEngine:
         self.impression_share_file = impression_share_file
         self.business_report_file = business_report_file
         self.sqp_report_file = sqp_report_file
-
+    
         self.min_roas = float(min_roas)
         self.min_clicks = int(min_clicks)
         self.zero_order_click_threshold = int(zero_order_click_threshold)
         self.zero_order_action = str(zero_order_action)
         self.strategy_mode = str(strategy_mode)
-
+    
         self.enable_bid_updates = bool(enable_bid_updates)
         self.enable_search_harvesting = bool(enable_search_harvesting)
         self.enable_negative_keywords = bool(enable_negative_keywords)
         self.enable_budget_updates = bool(enable_budget_updates)
-
+    
         self.enable_tacos_control = bool(enable_tacos_control)
         self.max_tacos_target = float(max_tacos_target) / 100.0
-
+    
         self.enable_monthly_budget_control = bool(enable_monthly_budget_control)
         self.monthly_account_budget = float(monthly_account_budget)
         self.month_to_date_spend = float(month_to_date_spend)
         self.pacing_buffer_pct = float(pacing_buffer_pct) / 100.0
-
+    
         self.max_bid_cap = float(max_bid_cap)
         self.max_budget_cap = float(max_budget_cap)
-
+    
         self.enable_dest_graduation = bool(enable_dest_graduation)
         self.enable_research_graduation = bool(enable_research_graduation)
         self.enable_asin_graduation = bool(enable_asin_graduation)
         self.create_missing_dest_campaigns = bool(create_missing_dest_campaigns)
         self.create_missing_research_campaigns = bool(create_missing_research_campaigns)
-
+    
         self.dest_terms = tuple(str(x).strip().lower() for x in dest_terms)
         self.research_campaign_prefix = str(research_campaign_prefix).strip() or "Research"
-
+    
         self.min_orders_for_graduation = int(min_orders_for_graduation)
         self.dest_acos_threshold = float(dest_acos_threshold) / 100.0
         self.research_ctr_low = float(research_ctr_low)
@@ -113,14 +113,14 @@ class AdsOptimizerEngine:
         self.loser_cvr_threshold = float(loser_cvr_threshold)
         self.new_target_bid_multiplier = float(new_target_bid_multiplier)
         self.new_target_bid_cap = float(new_target_bid_cap)
-
+    
         self.apply_strategy_settings()
-
+    
         self.existing_exact_keywords = set()
         self.existing_negative_exact = set()
         self.existing_product_targets = set()
         self.keyword_capable_ad_groups = set()
-
+    
         self.campaign_inventory = pd.DataFrame()
         self.ad_group_inventory = pd.DataFrame()
         self.bulk_targets_normalized = pd.DataFrame()
