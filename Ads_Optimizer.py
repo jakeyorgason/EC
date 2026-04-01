@@ -199,10 +199,18 @@ def build_narrative(
         notes.append(f"{simulation_summary['bid_decreases']} bid decreases were generated to reduce waste.")
     if simulation_summary.get("bid_increases", 0) > 0:
         notes.append(f"{simulation_summary['bid_increases']} bid increases were generated for strong-performing targets.")
-    if simulation_summary.get("graduations", 0) > 0:
-        notes.append(
-            f"{simulation_summary['graduations']} search terms or ASINs were graduated into Dest or Research structures."
-        )
+    found_graduations = simulation_summary.get("graduation_opportunities", simulation_summary.get("graduations", 0))
+    ready_graduations = simulation_summary.get("graduations", 0)
+
+    if found_graduations > 0:
+        if found_graduations == ready_graduations:
+            notes.append(
+                f"{ready_graduations} search terms or ASINs were graduated into Dest or Research structures."
+            )
+        else:
+            notes.append(
+                f"{found_graduations} graduation opportunities were found, and {ready_graduations} were ready for this upload."
+            )
     if simulation_summary.get("negatives_added", 0) > 0:
         notes.append(f"{simulation_summary['negatives_added']} Negative Exact rows were created for losers or source cleanup.")
     if simulation_summary.get("campaign_creates", 0) > 0:
@@ -999,6 +1007,8 @@ if "last_outputs" in st.session_state:
     output_account_health = safe_dict(outputs.get("account_health"))
     output_account_summary = safe_dict(outputs.get("account_summary"))
     simulation_summary = safe_dict(outputs.get("simulation_summary"))
+    preview_summary = safe_dict(outputs.get("pre_run_preview"))
+    simulation_summary["graduation_opportunities"] = int(preview_summary.get("graduations", 0))
     run_history = safe_df(outputs.get("run_history"))
     output_campaign_health_dashboard = safe_df(outputs.get("campaign_health_dashboard"))
     output_sqp_opportunities = safe_df(outputs.get("sqp_opportunities"))
@@ -1047,33 +1057,61 @@ if "last_outputs" in st.session_state:
         except Exception as e:
             st.warning(f"AI optimization skipped: {e}")
 
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Optimization Summary</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Optimization Summary</div>', unsafe_allow_html=True)
+    
+        preview_summary = safe_dict(outputs.get("pre_run_preview"))
+        found_graduations = int(preview_summary.get("graduations", 0))
+        ready_graduations = int(simulation_summary.get("graduations", 0))
+    
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
+        with s1:
+            render_metric_card("Bid Increases", str(simulation_summary.get("bid_increases", 0)), "good")
+        with s2:
+            render_metric_card("Bid Decreases", str(simulation_summary.get("bid_decreases", 0)), "warn")
+        with s3:
+            render_metric_card("Neg. Exacts", str(simulation_summary.get("negatives_added", 0)), "warn")
+        with s4:
+            render_metric_card("Grad Opportunities", str(found_graduations), "good")
+        with s5:
+            render_metric_card("Grad Ready This Upload", str(ready_graduations), "brand")
+        with s6:
+            render_metric_card(
+                "Budget Actions",
+                str(simulation_summary.get("budget_increases", 0) + simulation_summary.get("budget_decreases", 0)),
+                "brand",
+            )
+    
+        st.markdown("### Breakdown")
+        b1, b2, b3, b4 = st.columns(4)
+        with b1:
+            st.metric(
+                "Dest Exact",
+                preview_summary.get("dest_exact", 0),
+                delta=f"Ready now: {simulation_summary.get('dest_exact', 0)}",
+            )
+        with b2:
+            st.metric(
+                "Research Phrase",
+                preview_summary.get("research_phrase", 0),
+                delta=f"Ready now: {simulation_summary.get('research_phrase', 0)}",
+            )
+        with b3:
+            st.metric(
+                "ASIN Dest",
+                preview_summary.get("asin_dest", 0),
+                delta=f"Ready now: {simulation_summary.get('asin_dest', 0)}",
+            )
+        with b4:
+            st.metric("Ad Group Creates", simulation_summary.get("ad_group_creates", 0))
 
-    s1, s2, s3, s4, s5, s6 = st.columns(6)
-    with s1:
-        render_metric_card("Bid Increases", str(simulation_summary.get("bid_increases", 0)), "good")
-    with s2:
-        render_metric_card("Bid Decreases", str(simulation_summary.get("bid_decreases", 0)), "warn")
-    with s3:
-        render_metric_card("Neg. Exacts", str(simulation_summary.get("negatives_added", 0)), "warn")
-    with s4:
-        render_metric_card("Graduations", str(simulation_summary.get("graduations", 0)), "good")
-    with s5:
-        render_metric_card("Campaign Creates", str(simulation_summary.get("campaign_creates", 0)), "brand")
-    with s6:
-        render_metric_card("Budget Actions", str(simulation_summary.get("budget_increases", 0) + simulation_summary.get("budget_decreases", 0)), "brand")
 
-    st.markdown("### Breakdown")
-    b1, b2, b3, b4 = st.columns(4)
-    with b1:
-        st.metric("Dest Exact", simulation_summary.get("dest_exact", 0))
-    with b2:
-        st.metric("Research Phrase", simulation_summary.get("research_phrase", 0))
-    with b3:
-        st.metric("ASIN Dest", simulation_summary.get("asin_dest", 0))
-    with b4:
-        st.metric("Ad Group Creates", simulation_summary.get("ad_group_creates", 0))
+            if found_graduations > ready_graduations:
+                st.info(
+                    f"The engine found {found_graduations} graduation opportunities, but only {ready_graduations} "
+                    f"were ready for this upload. The remaining opportunities need existing destination campaign/ad group IDs "
+                    f"before Amazon will accept the child rows."
+                )
 
     narrative_notes = build_narrative(
         account_health=output_account_health,
