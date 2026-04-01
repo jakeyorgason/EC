@@ -1757,7 +1757,6 @@ class AdsOptimizerEngine:
 
     def build_simulation_summary(self, combined_bulk_updates, account_health):
         df = combined_bulk_updates.copy()
-    
         action_series = df["Optimizer Action"].fillna("").astype(str).str.strip().str.upper()
     
         return {
