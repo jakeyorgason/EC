@@ -185,7 +185,22 @@ class LegacySponsoredProductsEngine:
     # HELPERS
     # -----------------------------
     def safe_numeric(self, series):
-        return pd.to_numeric(series, errors="coerce").fillna(0)
+        if isinstance(series, (int, float, np.integer, np.floating)):
+            return pd.Series([float(series)])
+        if series is None:
+            return pd.Series(dtype=float)
+        s = pd.Series(series) if not isinstance(series, pd.Series) else series.copy()
+        if pd.api.types.is_numeric_dtype(s):
+            return pd.to_numeric(s, errors="coerce").fillna(0)
+        cleaned = (
+            s.astype(str)
+            .str.replace(r"[,$]", "", regex=True)
+            .str.replace("%", "", regex=False)
+            .str.replace(r"^\((.*)\)$", r"-\1", regex=True)
+            .str.replace(r"\s+", "", regex=True)
+            .replace({"": np.nan, "nan": np.nan, "None": np.nan, "NULL": np.nan})
+        )
+        return pd.to_numeric(cleaned, errors="coerce").fillna(0)
 
     def clean_text(self, series):
         cleaned = series.fillna("").astype(str).str.strip()
