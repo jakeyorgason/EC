@@ -8,6 +8,48 @@ import numpy as np
 import pandas as pd
 
 
+def find_matching_sheet_name(sheet_names, candidates):
+    normalized = {str(name).strip().lower(): name for name in sheet_names}
+
+    for candidate in candidates:
+        key = str(candidate).strip().lower()
+        if key in normalized:
+            return normalized[key]
+
+    for original_name in sheet_names:
+        name = str(original_name).strip().lower()
+        for candidate in candidates:
+            candidate_key = str(candidate).strip().lower()
+            if candidate_key in name or name in candidate_key:
+                return original_name
+
+    return None
+
+
+SP_BULK_SHEET_CANDIDATES = [
+    "Sponsored Products Campaigns",
+    "Sponsored Products",
+    "SP Campaigns",
+    "SP",
+]
+
+SB_BULK_SHEET_CANDIDATES = [
+    "Sponsored Brands Campaigns",
+    "Sponsored Brands",
+    "SB Campaigns",
+    "SB",
+    "SB Multi Ad Group Campaigns",
+]
+
+SD_BULK_SHEET_CANDIDATES = [
+    "Sponsored Display Campaigns",
+    "Sponsored Display",
+    "SD Campaigns",
+    "SD",
+    "RAS Campaigns",
+]
+
+
 def safe_concat_frames(frames, ignore_index=True):
     """Concatenate only non-empty DataFrames and never raise on an empty input list."""
     valid_frames = []
@@ -40,9 +82,9 @@ class Phase1UploadValidator:
     upload readiness and builds a spend reconciliation view before optimization.
     """
 
-    SP_BULK_SHEETS = ["Sponsored Products Campaigns", "SP Search Term Report"]
-    SB_BULK_SHEETS = ["Sponsored Brands Campaigns", "SB Multi Ad Group Campaigns", "SB Search Term Report"]
-    SD_BULK_SHEETS = ["Sponsored Display Campaigns", "RAS Campaigns", "RAS Search Term Report"]
+    SP_BULK_SHEETS = ["Sponsored Products Campaigns", "Sponsored Products", "SP Campaigns", "SP", "SP Search Term Report"]
+    SB_BULK_SHEETS = ["Sponsored Brands Campaigns", "Sponsored Brands", "SB Campaigns", "SB", "SB Multi Ad Group Campaigns", "SB Search Term Report"]
+    SD_BULK_SHEETS = ["Sponsored Display Campaigns", "Sponsored Display", "SD Campaigns", "SD", "RAS Campaigns", "RAS Search Term Report"]
 
     def __init__(
         self,
@@ -453,12 +495,21 @@ class AdsOptimizerEngine:
 
     def load_bulk_sheet(self):
         cloned = self._clone_file_obj(self.bulk_file)
-        return pd.read_excel(
+        workbook = pd.read_excel(
             cloned,
-            sheet_name="Sponsored Products Campaigns",
+            sheet_name=None,
             engine="openpyxl",
             dtype=str,
         )
+        sp_sheet_name = find_matching_sheet_name(
+            workbook.keys(),
+            SP_BULK_SHEET_CANDIDATES,
+        )
+        if sp_sheet_name is None:
+            raise ValueError(
+                f"Could not find a Sponsored Products bulk sheet. Found sheets: {list(workbook.keys())}"
+            )
+        return workbook[sp_sheet_name]
 
     def load_sqp_simple_view(self):
         if self.sqp_report_file is None:
