@@ -8,6 +8,30 @@ import numpy as np
 import pandas as pd
 
 
+def safe_concat_frames(frames, ignore_index=True):
+    """Concatenate only non-empty DataFrames and never raise on an empty input list."""
+    valid_frames = []
+    if frames is None:
+        return pd.DataFrame()
+    for frame in frames:
+        if frame is None:
+            continue
+        if isinstance(frame, pd.DataFrame):
+            if not frame.empty:
+                valid_frames.append(frame)
+            continue
+        try:
+            candidate = pd.DataFrame(frame)
+            if not candidate.empty:
+                valid_frames.append(candidate)
+        except Exception:
+            continue
+    if not valid_frames:
+        return pd.DataFrame()
+    return pd.concat(valid_frames, ignore_index=ignore_index)
+
+
+
 class Phase1UploadValidator:
     """Phase 1 upload validation and spend reconciliation.
 
@@ -888,7 +912,7 @@ class AdsOptimizerEngine:
 
         if os.path.exists(history_path):
             existing = pd.read_csv(history_path)
-            updated = pd.concat([existing, new_row_df], ignore_index=True)
+            updated = safe_concat_frames([existing, new_row_df], ignore_index=True)
         else:
             updated = new_row_df
 
@@ -1976,20 +2000,15 @@ class AdsOptimizerEngine:
         negative_bulk_updates = self.generate_negative_bulk_updates(search_term_actions)
         budget_bulk_updates = self.generate_budget_bulk_updates(campaign_budget_actions)
 
-        bulk_update_frames = [
-            df for df in [
+        combined_bulk_updates = safe_concat_frames(
+            [
                 bid_bulk_updates,
                 harvest_bulk_updates,
                 negative_bulk_updates,
                 budget_bulk_updates,
-            ]
-            if df is not None and not df.empty
-        ]
-
-        if bulk_update_frames:
-            combined_bulk_updates = pd.concat(bulk_update_frames, ignore_index=True)
-        else:
-            combined_bulk_updates = pd.DataFrame()
+            ],
+            ignore_index=True,
+        )
 
         combined_bulk_updates = self.apply_final_safeguards(combined_bulk_updates)
         simulation_summary = self.build_simulation_summary(combined_bulk_updates, account_health)
@@ -2350,9 +2369,9 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             if multi_sheet is not None and not multi_sheet.empty:
                 bid_updates.append(self._build_bid_updates_for_sheet(multi_sheet, perf[perf['keyword_id'].ne('')].copy(), 'Keyword ID'))
                 budget_updates.append(self._build_campaign_budget_updates(multi_sheet, perf))
-        bid_updates_df = pd.concat([df for df in bid_updates if df is not None and not df.empty], ignore_index=True) if bid_updates else pd.DataFrame()
-        budget_updates_df = pd.concat([df for df in budget_updates if df is not None and not df.empty], ignore_index=True) if budget_updates else pd.DataFrame()
-        combined = pd.concat([bid_updates_df, budget_updates_df], ignore_index=True) if (not bid_updates_df.empty or not budget_updates_df.empty) else pd.DataFrame()
+        bid_updates_df = safe_concat_frames(bid_updates, ignore_index=True)
+        budget_updates_df = safe_concat_frames(budget_updates, ignore_index=True)
+        combined = safe_concat_frames([bid_updates_df, budget_updates_df], ignore_index=True)
         action_log = pd.DataFrame()
         if not perf.empty:
             action_log = perf[['campaign_name', 'ad_group_name', 'search_term', 'clicks', 'spend', 'sales', 'orders', 'roas']].copy()
@@ -2494,9 +2513,9 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
                             joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
                             joined['ad_group'] = ''
                             budget_updates.append(joined)
-        bid_updates_df = pd.concat(bid_updates, ignore_index=True) if bid_updates else pd.DataFrame()
-        budget_updates_df = pd.concat(budget_updates, ignore_index=True) if budget_updates else pd.DataFrame()
-        combined = pd.concat([bid_updates_df, budget_updates_df], ignore_index=True) if (not bid_updates_df.empty or not budget_updates_df.empty) else pd.DataFrame()
+        bid_updates_df = safe_concat_frames(bid_updates, ignore_index=True)
+        budget_updates_df = safe_concat_frames(budget_updates, ignore_index=True)
+        combined = safe_concat_frames([bid_updates_df, budget_updates_df], ignore_index=True)
         summary = {
             'bid_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BID').sum()) if not combined.empty else 0,
             'bid_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BID').sum()) if not combined.empty else 0,
@@ -2715,10 +2734,10 @@ class Phase2AdsOrchestrator:
             execution_summary_rows.append({'ad_type':'SD','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sd_spend',0.0)})
 
         execution_summary = pd.DataFrame(execution_summary_rows)
-        combined_bulk_updates = pd.concat(all_bulk_updates, ignore_index=True) if all_bulk_updates else pd.DataFrame()
-        bid_recommendations = pd.concat(all_bid_updates, ignore_index=True) if all_bid_updates else pd.DataFrame()
-        search_term_actions = pd.concat(all_search_actions, ignore_index=True) if all_search_actions else pd.DataFrame()
-        campaign_budget_actions = pd.concat(all_budget_actions, ignore_index=True) if all_budget_actions else pd.DataFrame()
+        combined_bulk_updates = safe_concat_frames(all_bulk_updates, ignore_index=True)
+        bid_recommendations = safe_concat_frames(all_bid_updates, ignore_index=True)
+        search_term_actions = safe_concat_frames(all_search_actions, ignore_index=True)
+        campaign_budget_actions = safe_concat_frames(all_budget_actions, ignore_index=True)
         spend_summary = validation.get('spend_summary', {})
         combined_account_summary['sp_total_spend'] = spend_summary.get('sp_spend', 0.0)
         combined_account_summary['sb_total_spend'] = spend_summary.get('sb_spend', 0.0)
@@ -2750,7 +2769,3 @@ class Phase2AdsOrchestrator:
             'per_type_outputs': per_type,
             'runnable_types': runnable,
         }
-
-
-    def analyze(self):
-        return self.process()
