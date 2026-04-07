@@ -2242,6 +2242,15 @@ class _Phase2BaseOptimizer:
     def clean_text(self, series):
         return series.fillna('').astype(str).str.strip()
 
+    def normalize_join_text(self, series):
+        return (
+            series.fillna('')
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .str.replace(r'\s+', ' ', regex=True)
+        )
+
     def _budget_action(self, roas, orders):
         if orders >= self.min_orders_for_scaling and roas >= self.min_roas * self.scale_roas_multiplier:
             return 'INCREASE_BUDGET'
@@ -2291,27 +2300,52 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         if df is None or df.empty:
             wb = self.load_bulk_workbook()
             df = wb.get('SB Search Term Report')
+    
         if df is None or df.empty:
             return pd.DataFrame()
+    
         out = df.copy()
+    
         out['campaign_id'] = self.clean_text(out.get('Campaign ID', pd.Series('', index=out.index)))
         out['ad_group_id'] = self.clean_text(out.get('Ad Group ID', pd.Series('', index=out.index)))
         out['keyword_id'] = self.clean_text(out.get('Keyword ID', pd.Series('', index=out.index)))
         out['product_targeting_id'] = self.clean_text(out.get('Product Targeting ID', pd.Series('', index=out.index)))
-        out['campaign_name'] = self.clean_text(out.get('Campaign Name (Informational only)', pd.Series('', index=out.index)))
-        if 'Ad Group Name (Informational only)' in out.columns:
-            out['ad_group_name'] = self.clean_text(out['Ad Group Name (Informational only)'])
-        else:
-            out['ad_group_name'] = ''
-        out['keyword_text'] = self.clean_text(out.get('Keyword Text', pd.Series('', index=out.index)))
-        out['match_type'] = self.clean_text(out.get('Match Type', pd.Series('', index=out.index)))
-        out['search_term'] = self.clean_text(out.get('Customer Search Term', pd.Series('', index=out.index)))
-        out['bid'] = self.first_present(out, ['Bid'])
+    
+        out['campaign_name'] = self.clean_text(
+            out.get('Campaign Name (Informational only)', out.get('Campaign Name', pd.Series('', index=out.index)))
+        )
+    
+        out['ad_group_name'] = self.clean_text(
+            out.get('Ad Group Name (Informational only)', out.get('Ad Group Name', pd.Series('', index=out.index)))
+        )
+    
+        out['keyword_text'] = self.clean_text(
+            out.get('Keyword Text', out.get('Keyword', out.get('Targeting', pd.Series('', index=out.index))))
+        )
+    
+        out['match_type'] = self.clean_text(
+            out.get('Match Type', out.get('Targeting Type', pd.Series('', index=out.index)))
+        )
+    
+        out['search_term'] = self.clean_text(
+            out.get('Customer Search Term', out.get('Search Term', pd.Series('', index=out.index)))
+        )
+    
+        out['bid'] = self.first_present(out, ['Bid', 'Default Bid'])
         out['clicks'] = self.first_present(out, ['Clicks'])
-        out['spend'] = self.first_present(out, ['Spend'])
-        out['sales'] = self.first_present(out, ['Sales'])
-        out['orders'] = self.first_present(out, ['Orders'])
-        out['roas'] = self.first_present(out, ['ROAS'])
+        out['spend'] = self.first_present(out, ['Spend', 'Cost'])
+        out['sales'] = self.first_present(out, ['Sales', 'Attributed Sales 14 Day', 'Attributed Sales'])
+        out['orders'] = self.first_present(out, ['Orders', 'Purchases', 'Attributed Conversions 14 Day'])
+        out['roas'] = self.first_present(out, ['ROAS', 'Return on Ad Spend'])
+    
+        if 'ROAS' not in out.columns and 'Return on Ad Spend' not in out.columns:
+            out['roas'] = np.where(out['spend'] > 0, out['sales'] / out['spend'], 0)
+    
+        out['campaign_name_key'] = self.normalize_join_text(out['campaign_name'])
+        out['ad_group_name_key'] = self.normalize_join_text(out['ad_group_name'])
+        out['keyword_text_key'] = self.normalize_join_text(out['keyword_text'])
+        out['search_term_key'] = self.normalize_join_text(out['search_term'])
+    
         return out
 
     def _bulk_sheets(self):
@@ -2321,40 +2355,118 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
     def _build_bid_updates_for_sheet(self, sheet_df, perf_df, id_col, entity_col='Entity'):
         if sheet_df is None or sheet_df.empty:
             return pd.DataFrame()
-        if id_col not in sheet_df.columns or 'Bid' not in sheet_df.columns:
+    
+        if 'Bid' not in sheet_df.columns:
             return pd.DataFrame()
-        sheet = sheet_df.copy()
-        if entity_col in sheet.columns:
-            sheet = sheet[sheet[entity_col].astype(str).str.contains('Keyword|Product Target', case=False, na=False)].copy()
-        if sheet.empty:
+    
+        work = sheet_df.copy()
+    
+        if entity_col in work.columns:
+            work = work[
+                work[entity_col].astype(str).str.contains('Keyword|Product Target', case=False, na=False)
+            ].copy()
+    
+        if work.empty:
             return pd.DataFrame()
-        sheet['_id_key'] = self.clean_text(sheet[id_col])
+    
+        work['_id_key'] = self.clean_text(work.get(id_col, pd.Series('', index=work.index)))
+        work['_campaign_name_key'] = self.normalize_join_text(
+            work.get('Campaign Name', work.get('Campaign Name (Informational only)', pd.Series('', index=work.index)))
+        )
+        work['_ad_group_name_key'] = self.normalize_join_text(
+            work.get('Ad Group Name', work.get('Ad Group Name (Informational only)', pd.Series('', index=work.index)))
+        )
+    
+        sheet_text_col = None
+        for c in ['Keyword Text', 'Targeting', 'Product Targeting Expression', 'Resolved Expression']:
+            if c in work.columns:
+                sheet_text_col = c
+                break
+    
+        if sheet_text_col is not None:
+            work['_keyword_text_key'] = self.normalize_join_text(work[sheet_text_col])
+        else:
+            work['_keyword_text_key'] = ''
+    
         perf = perf_df.copy()
-        perf['_id_key'] = self.clean_text(perf[id_col.replace(' ID', '_id')]) if id_col.replace(' ID', '_id') in perf.columns else self.clean_text(perf.get(id_col, pd.Series('', index=perf.index)))
-        perf = perf.groupby('_id_key', as_index=False).agg(
+    
+        perf_id_col = {
+            'Keyword ID': 'keyword_id',
+            'Product Targeting ID': 'product_targeting_id',
+        }.get(id_col, id_col)
+    
+        perf['_id_key'] = self.clean_text(perf.get(perf_id_col, pd.Series('', index=perf.index)))
+        perf['_campaign_name_key'] = self.normalize_join_text(perf.get('campaign_name', pd.Series('', index=perf.index)))
+        perf['_ad_group_name_key'] = self.normalize_join_text(perf.get('ad_group_name', pd.Series('', index=perf.index)))
+        perf['_keyword_text_key'] = self.normalize_join_text(perf.get('keyword_text', pd.Series('', index=perf.index)))
+    
+        perf_by_id = perf[perf['_id_key'] != ''].groupby('_id_key', as_index=False).agg(
             clicks=('clicks', 'sum'),
             spend=('spend', 'sum'),
             sales=('sales', 'sum'),
             orders=('orders', 'sum'),
             roas=('roas', 'mean'),
-            campaign_name=('campaign_name', 'first'),
-            ad_group_name=('ad_group_name', 'first'),
-            keyword_text=('keyword_text', 'first'),
-            match_type=('match_type', 'first'),
         )
-        joined = sheet.merge(perf, on='_id_key', how='left')
-        joined['clicks'] = joined['clicks'].fillna(0)
-        joined['orders'] = joined['orders'].fillna(0)
-        joined['roas'] = joined['roas'].fillna(0)
+    
+        joined = work.merge(perf_by_id, on='_id_key', how='left')
+    
+        fallback_perf = perf.groupby(
+            ['_campaign_name_key', '_ad_group_name_key', '_keyword_text_key'],
+            as_index=False
+        ).agg(
+            fb_clicks=('clicks', 'sum'),
+            fb_spend=('spend', 'sum'),
+            fb_sales=('sales', 'sum'),
+            fb_orders=('orders', 'sum'),
+            fb_roas=('roas', 'mean'),
+        )
+    
+        joined = joined.merge(
+            fallback_perf,
+            on=['_campaign_name_key', '_ad_group_name_key', '_keyword_text_key'],
+            how='left'
+        )
+    
+        joined['clicks'] = joined['clicks'].fillna(joined['fb_clicks']).fillna(0)
+        joined['spend'] = joined['spend'].fillna(joined['fb_spend']).fillna(0)
+        joined['sales'] = joined['sales'].fillna(joined['fb_sales']).fillna(0)
+        joined['orders'] = joined['orders'].fillna(joined['fb_orders']).fillna(0)
+        joined['roas'] = joined['roas'].fillna(joined['fb_roas']).fillna(0)
+    
         joined['current_bid'] = self.safe_numeric(joined['Bid'])
-        joined['optimizer_action'] = joined.apply(lambda r: self._bid_action(r['roas'], r['clicks'], r['orders']) if self.enable_bid_updates else None, axis=1)
+    
+        def sb_bid_action(row):
+            clicks = float(row['clicks'] or 0)
+            orders = float(row['orders'] or 0)
+            roas = float(row['roas'] or 0)
+            spend = float(row['spend'] or 0)
+    
+            if (clicks >= max(6, self.min_clicks - 2) or spend >= 20) and orders == 0:
+                return 'DECREASE_BID'
+            if clicks >= max(6, self.min_clicks - 2) and roas > 0 and roas < self.min_roas:
+                return 'DECREASE_BID'
+            if orders >= self.min_orders_for_scaling and roas >= self.min_roas * 1.10:
+                return 'INCREASE_BID'
+            return None
+    
+        joined['optimizer_action'] = joined.apply(
+            lambda r: sb_bid_action(r) if self.enable_bid_updates else None,
+            axis=1,
+        )
+    
         joined = joined[joined['optimizer_action'].notna()].copy()
         if joined.empty:
             return pd.DataFrame()
-        joined['new_bid'] = joined.apply(lambda r: self._adjust_bid(r['current_bid'], r['optimizer_action']), axis=1)
+    
+        joined['new_bid'] = joined.apply(
+            lambda r: self._adjust_bid(r['current_bid'], r['optimizer_action']),
+            axis=1,
+        )
+    
         joined = joined[joined['new_bid'] != joined['current_bid']].copy()
         if joined.empty:
             return pd.DataFrame()
+    
         joined['Bid'] = joined['new_bid']
         joined['Operation'] = 'update'
         joined['Product'] = 'Sponsored Brands'
@@ -2362,6 +2474,7 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         joined['source_type'] = 'bid'
         joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
         joined['ad_group'] = joined.get('Ad Group Name', joined.get('ad_group_name', ''))
+    
         return joined
 
     def _build_campaign_budget_updates(self, sheet_df, perf_df, campaign_id_col='Campaign ID', budget_col='Budget'):
@@ -2406,29 +2519,46 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
     def process(self):
         perf = self._load_search_terms()
         standard_sheet, multi_sheet, wb = self._bulk_sheets()
+    
         bid_updates = []
         budget_updates = []
+    
+        perf_rows_loaded = len(perf)
+        perf_rows_with_ids = 0 if perf.empty else int(((perf['keyword_id'] != '') | (perf['product_targeting_id'] != '')).sum())
+        search_rows_above_floor = 0 if perf.empty else int((perf['clicks'] >= max(6, self.min_clicks - 2)).sum())
+        search_rows_zero_order_loss = 0 if perf.empty else int((((perf['clicks'] >= max(6, self.min_clicks - 2)) | (perf['spend'] >= 20)) & (perf['orders'] == 0)).sum())
+    
         if not perf.empty:
             if standard_sheet is not None and not standard_sheet.empty:
-                std_perf = perf[perf['keyword_id'].ne('') | perf['product_targeting_id'].ne('')].copy()
-                if not std_perf.empty:
-                    if 'keyword_id' in std_perf.columns:
-                        bid_updates.append(self._build_bid_updates_for_sheet(standard_sheet, std_perf[std_perf['keyword_id'].ne('')].copy(), 'Keyword ID'))
-                    if 'product_targeting_id' in std_perf.columns:
-                        bid_updates.append(self._build_bid_updates_for_sheet(standard_sheet, std_perf[std_perf['product_targeting_id'].ne('')].copy(), 'Product Targeting ID'))
+                bid_updates.append(self._build_bid_updates_for_sheet(standard_sheet, perf.copy(), 'Keyword ID'))
+                bid_updates.append(self._build_bid_updates_for_sheet(standard_sheet, perf.copy(), 'Product Targeting ID'))
                 budget_updates.append(self._build_campaign_budget_updates(standard_sheet, perf))
+    
             if multi_sheet is not None and not multi_sheet.empty:
-                bid_updates.append(self._build_bid_updates_for_sheet(multi_sheet, perf[perf['keyword_id'].ne('')].copy(), 'Keyword ID'))
+                bid_updates.append(self._build_bid_updates_for_sheet(multi_sheet, perf.copy(), 'Keyword ID'))
                 budget_updates.append(self._build_campaign_budget_updates(multi_sheet, perf))
+    
         bid_updates_df = safe_concat_frames(bid_updates, ignore_index=True)
         budget_updates_df = safe_concat_frames(budget_updates, ignore_index=True)
         combined = safe_concat_frames([bid_updates_df, budget_updates_df], ignore_index=True)
+    
         action_log = pd.DataFrame()
         if not perf.empty:
             action_log = perf[['campaign_name', 'ad_group_name', 'search_term', 'clicks', 'spend', 'sales', 'orders', 'roas']].copy()
             action_log['ad_type'] = 'SB'
             action_log['source_type'] = 'search_term'
-            action_log['optimizer_action'] = action_log.apply(lambda r: 'REVIEW_SEARCH_TERM' if r['clicks'] >= self.min_clicks else 'OBSERVE', axis=1)
+    
+            def sb_search_action(row):
+                if ((row['clicks'] >= max(6, self.min_clicks - 2)) or (row['spend'] >= 20)) and row['orders'] == 0:
+                    return 'NEGATIVE_OR_BID_REVIEW'
+                if row['orders'] >= self.min_orders_for_scaling and row['roas'] >= self.min_roas * 1.10:
+                    return 'PROMOTE_OR_SCALE'
+                if row['clicks'] >= max(6, self.min_clicks - 2):
+                    return 'REVIEW_SEARCH_TERM'
+                return 'OBSERVE'
+    
+            action_log['optimizer_action'] = action_log.apply(sb_search_action, axis=1)
+    
         summary = {
             'bid_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BID').sum()) if not combined.empty else 0,
             'bid_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BID').sum()) if not combined.empty else 0,
@@ -2437,10 +2567,23 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             'harvested_keywords': 0,
             'negatives_added': 0,
         }
+    
+        diagnostics = pd.DataFrame([{
+            'ad_type': 'SB',
+            'perf_rows_loaded': perf_rows_loaded,
+            'perf_rows_with_ids': perf_rows_with_ids,
+            'search_rows_above_click_floor': search_rows_above_floor,
+            'search_rows_zero_order_loss': search_rows_zero_order_loss,
+            'bid_rows_generated': len(bid_updates_df),
+            'budget_rows_generated': len(budget_updates_df),
+            'combined_rows_generated': len(combined),
+        }])
+    
         account_summary = {
             'total_spend': round(float(perf['spend'].sum()), 2) if not perf.empty else 0.0,
             'total_sales': round(float(perf['sales'].sum()), 2) if not perf.empty else 0.0,
         }
+    
         return {
             'ad_type': 'SB',
             'combined_bulk_updates': combined,
@@ -2453,6 +2596,7 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             'smart_warnings': [],
             'optimization_suggestions': [],
             'pre_run_preview': summary,
+            'diagnostics': diagnostics,
         }
 
 
@@ -2463,70 +2607,200 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
 
     def _load_targeting(self):
         df = self.load_file(self.targeting_file) if self.targeting_file is not None else None
+    
         if df is None or df.empty:
             wb = self.load_bulk_workbook()
             if 'Sponsored Display Campaigns' in wb:
                 df = wb['Sponsored Display Campaigns']
             elif 'RAS Campaigns' in wb:
                 df = wb['RAS Campaigns']
+    
         if df is None or df.empty:
             return pd.DataFrame()
+    
         out = df.copy()
+    
         out['campaign_id'] = self.clean_text(out.get('Campaign ID', pd.Series('', index=out.index)))
         out['ad_group_id'] = self.clean_text(out.get('Ad Group ID', pd.Series('', index=out.index)))
         out['targeting_id'] = self.clean_text(out.get('Targeting ID', out.get('Target ID', pd.Series('', index=out.index))))
-        out['campaign_name'] = self.clean_text(out.get('Campaign Name', out.get('Campaign Name (Informational only)', pd.Series('', index=out.index))))
-        out['ad_group_name'] = self.clean_text(out.get('Ad Group Name', out.get('Ad Group Name (Informational only)', pd.Series('', index=out.index))))
-        out['bid'] = self.first_present(out, ['Bid', 'Ad Group Default Bid'])
-        out['budget'] = self.first_present(out, ['Budget'])
+    
+        out['campaign_name'] = self.clean_text(
+            out.get('Campaign Name', out.get('Campaign Name (Informational only)', pd.Series('', index=out.index)))
+        )
+        out['ad_group_name'] = self.clean_text(
+            out.get('Ad Group Name', out.get('Ad Group Name (Informational only)', pd.Series('', index=out.index)))
+        )
+    
+        out['target_text'] = self.clean_text(
+            out.get('Targeting', out.get('Target', out.get('Resolved Expression', pd.Series('', index=out.index))))
+        )
+    
+        out['bid'] = self.first_present(out, ['Bid', 'Ad Group Default Bid', 'Default Bid'])
+        out['budget'] = self.first_present(out, ['Budget', 'Daily Budget'])
         out['clicks'] = self.first_present(out, ['Clicks'])
-        out['spend'] = self.first_present(out, ['Spend'])
-        out['sales'] = self.first_present(out, ['Sales'])
-        out['orders'] = self.first_present(out, ['Orders'])
-        out['roas'] = self.first_present(out, ['ROAS'])
-        if 'ROAS' not in out.columns:
+        out['spend'] = self.first_present(out, ['Spend', 'Cost'])
+        out['sales'] = self.first_present(out, ['Sales', 'Attributed Sales 14 Day', 'Attributed Sales'])
+        out['orders'] = self.first_present(out, ['Orders', 'Purchases', 'Attributed Conversions 14 Day'])
+        out['roas'] = self.first_present(out, ['ROAS', 'Return on Ad Spend'])
+    
+        if 'ROAS' not in out.columns and 'Return on Ad Spend' not in out.columns:
             out['roas'] = np.where(out['spend'] > 0, out['sales'] / out['spend'], 0)
+    
         out['tactic'] = self.clean_text(out.get('Tactic', out.get('Targeting Type', pd.Series('', index=out.index))))
+    
+        out['campaign_name_key'] = self.normalize_join_text(out['campaign_name'])
+        out['ad_group_name_key'] = self.normalize_join_text(out['ad_group_name'])
+        out['target_text_key'] = self.normalize_join_text(out['target_text'])
+    
         return out
 
     def process(self):
         perf = self._load_targeting()
+    
         if perf.empty:
             return {
-                'ad_type': 'SD', 'combined_bulk_updates': pd.DataFrame(), 'bid_recommendations': pd.DataFrame(),
-                'campaign_budget_actions': pd.DataFrame(), 'search_term_actions': pd.DataFrame(),
+                'ad_type': 'SD',
+                'combined_bulk_updates': pd.DataFrame(),
+                'bid_recommendations': pd.DataFrame(),
+                'campaign_budget_actions': pd.DataFrame(),
+                'search_term_actions': pd.DataFrame(),
                 'simulation_summary': {'bid_increases':0,'bid_decreases':0,'budget_increases':0,'budget_decreases':0,'harvested_keywords':0,'negatives_added':0},
-                'account_summary': {'total_spend':0.0,'total_sales':0.0}, 'campaign_health_dashboard': pd.DataFrame(),
-                'smart_warnings': [], 'optimization_suggestions': [], 'pre_run_preview': {},
+                'account_summary': {'total_spend':0.0,'total_sales':0.0},
+                'campaign_health_dashboard': pd.DataFrame(),
+                'smart_warnings': [],
+                'optimization_suggestions': [],
+                'pre_run_preview': {},
+                'diagnostics': pd.DataFrame([{
+                    'ad_type': 'SD',
+                    'perf_rows_loaded': 0,
+                    'perf_rows_with_targeting_ids': 0,
+                    'rows_above_click_floor': 0,
+                    'rows_zero_order_loss': 0,
+                    'bid_rows_generated': 0,
+                    'budget_rows_generated': 0,
+                    'combined_rows_generated': 0,
+                }]),
             }
+    
         wb = self.load_bulk_workbook()
         sd_sheet = wb.get('Sponsored Display Campaigns')
         ras_sheet = wb.get('RAS Campaigns')
+    
         bid_updates = []
         budget_updates = []
-        for sheet, id_col, budget_col in [(sd_sheet, 'Targeting ID', 'Budget'), (ras_sheet, 'Target ID', 'Budget')]:
+    
+        perf_rows_with_targeting_ids = int((perf['targeting_id'] != '').sum())
+        rows_above_click_floor = int((perf['clicks'] >= max(5, self.min_clicks - 2)).sum())
+        rows_zero_order_loss = int((((perf['clicks'] >= max(5, self.min_clicks - 2)) | (perf['spend'] >= 15)) & (perf['orders'] == 0)).sum())
+    
+        def sd_bid_action(row):
+            clicks = float(row['clicks'] or 0)
+            orders = float(row['orders'] or 0)
+            roas = float(row['roas'] or 0)
+            spend = float(row['spend'] or 0)
+    
+            if (clicks >= max(5, self.min_clicks - 2) or spend >= 15) and orders == 0:
+                return 'DECREASE_BID'
+            if clicks >= max(5, self.min_clicks - 2) and roas > 0 and roas < self.min_roas:
+                return 'DECREASE_BID'
+            if orders >= self.min_orders_for_scaling and roas >= self.min_roas * 1.10:
+                return 'INCREASE_BID'
+            return None
+    
+        def sd_budget_action(row):
+            orders = float(row['orders'] or 0)
+            roas = float(row['roas'] or 0)
+            spend = float(row['spend'] or 0)
+    
+            if spend >= 25 and orders == 0:
+                return 'DECREASE_BUDGET'
+            if roas > 0 and roas < self.min_roas:
+                return 'DECREASE_BUDGET'
+            if orders >= self.min_orders_for_scaling and roas >= self.min_roas * 1.10:
+                return 'INCREASE_BUDGET'
+            return None
+    
+        for sheet, id_col, budget_col in [
+            (sd_sheet, 'Targeting ID', 'Budget'),
+            (ras_sheet, 'Target ID', 'Budget'),
+        ]:
             if sheet is None or sheet.empty:
                 continue
+    
             work = sheet.copy()
-            if id_col in work.columns and 'Bid' in work.columns:
-                if 'Entity' in work.columns:
-                    work = work[work['Entity'].astype(str).str.contains('Target', case=False, na=False)].copy()
-                work['_target_key'] = self.clean_text(work[id_col])
-                grouped = perf.groupby('targeting_id', as_index=False).agg(
-                    clicks=('clicks','sum'), spend=('spend','sum'), sales=('sales','sum'), orders=('orders','sum'), roas=('roas','mean'),
-                    campaign_name=('campaign_name','first'), ad_group_name=('ad_group_name','first'), tactic=('tactic','first')
+            work['_campaign_key'] = self.clean_text(work.get('Campaign ID', pd.Series('', index=work.index)))
+            work['_ad_group_key'] = self.clean_text(work.get('Ad Group ID', pd.Series('', index=work.index)))
+            work['_target_key'] = self.clean_text(work.get(id_col, pd.Series('', index=work.index)))
+            work['_campaign_name_key'] = self.normalize_join_text(
+                work.get('Campaign Name', work.get('Campaign Name (Informational only)', pd.Series('', index=work.index)))
+            )
+            work['_ad_group_name_key'] = self.normalize_join_text(
+                work.get('Ad Group Name', work.get('Ad Group Name (Informational only)', pd.Series('', index=work.index)))
+            )
+    
+            target_text_col = None
+            for c in ['Targeting', 'Target', 'Resolved Expression', 'Expression']:
+                if c in work.columns:
+                    target_text_col = c
+                    break
+    
+            if target_text_col is not None:
+                work['_target_text_key'] = self.normalize_join_text(work[target_text_col])
+            else:
+                work['_target_text_key'] = ''
+    
+            if 'Entity' in work.columns:
+                target_rows = work[work['Entity'].astype(str).str.contains('Target|Audience|Product', case=False, na=False)].copy()
+            else:
+                target_rows = work.copy()
+    
+            if not target_rows.empty and 'Bid' in target_rows.columns:
+                perf_by_id = perf[perf['targeting_id'] != ''].groupby('targeting_id', as_index=False).agg(
+                    clicks=('clicks','sum'),
+                    spend=('spend','sum'),
+                    sales=('sales','sum'),
+                    orders=('orders','sum'),
+                    roas=('roas','mean'),
                 )
-                grouped['_target_key'] = self.clean_text(grouped['targeting_id'])
-                joined = work.merge(grouped, on='_target_key', how='left')
-                joined['clicks'] = joined['clicks'].fillna(0)
-                joined['orders'] = joined['orders'].fillna(0)
-                joined['roas'] = joined['roas'].fillna(0)
+                perf_by_id['_target_key'] = self.clean_text(perf_by_id['targeting_id'])
+    
+                joined = target_rows.merge(perf_by_id, on='_target_key', how='left')
+    
+                perf_fallback = perf.groupby(
+                    ['campaign_name_key', 'ad_group_name_key', 'target_text_key'],
+                    as_index=False
+                ).agg(
+                    fb_clicks=('clicks','sum'),
+                    fb_spend=('spend','sum'),
+                    fb_sales=('sales','sum'),
+                    fb_orders=('orders','sum'),
+                    fb_roas=('roas','mean'),
+                )
+    
+                joined = joined.merge(
+                    perf_fallback,
+                    left_on=['_campaign_name_key', '_ad_group_name_key', '_target_text_key'],
+                    right_on=['campaign_name_key', 'ad_group_name_key', 'target_text_key'],
+                    how='left'
+                )
+    
+                joined['clicks'] = joined['clicks'].fillna(joined['fb_clicks']).fillna(0)
+                joined['spend'] = joined['spend'].fillna(joined['fb_spend']).fillna(0)
+                joined['sales'] = joined['sales'].fillna(joined['fb_sales']).fillna(0)
+                joined['orders'] = joined['orders'].fillna(joined['fb_orders']).fillna(0)
+                joined['roas'] = joined['roas'].fillna(joined['fb_roas']).fillna(0)
+    
                 joined['current_bid'] = self.safe_numeric(joined['Bid'])
-                joined['optimizer_action'] = joined.apply(lambda r: self._bid_action(r['roas'], r['clicks'], r['orders']) if self.enable_bid_updates else None, axis=1)
+                joined['optimizer_action'] = joined.apply(
+                    lambda r: sd_bid_action(r) if self.enable_bid_updates else None,
+                    axis=1,
+                )
                 joined = joined[joined['optimizer_action'].notna()].copy()
+    
                 if not joined.empty:
                     joined['new_bid'] = joined.apply(lambda r: self._adjust_bid(r['current_bid'], r['optimizer_action']), axis=1)
                     joined = joined[joined['new_bid'] != joined['current_bid']].copy()
+    
                     if not joined.empty:
                         joined['Bid'] = joined['new_bid']
                         joined['Operation'] = 'update'
@@ -2536,25 +2810,41 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
                         joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
                         joined['ad_group'] = joined.get('Ad Group Name', joined.get('ad_group_name', ''))
                         bid_updates.append(joined)
+    
             if budget_col in work.columns and 'Campaign ID' in work.columns:
                 campaigns = work.copy()
                 if 'Entity' in campaigns.columns:
                     campaigns = campaigns[campaigns['Entity'].astype(str).str.contains('Campaign', case=False, na=False)].copy()
+    
                 if not campaigns.empty:
                     campaigns['_campaign_key'] = self.clean_text(campaigns['Campaign ID'])
-                    grouped = perf.groupby('campaign_id', as_index=False).agg(
-                        clicks=('clicks','sum'), spend=('spend','sum'), sales=('sales','sum'), orders=('orders','sum'), roas=('roas','mean'), campaign_name=('campaign_name','first')
+    
+                    perf_campaigns = perf.groupby('campaign_id', as_index=False).agg(
+                        clicks=('clicks','sum'),
+                        spend=('spend','sum'),
+                        sales=('sales','sum'),
+                        orders=('orders','sum'),
+                        roas=('roas','mean'),
                     )
-                    grouped['_campaign_key'] = self.clean_text(grouped['campaign_id'])
-                    joined = campaigns.merge(grouped, on='_campaign_key', how='left')
-                    joined['roas'] = joined['roas'].fillna(0)
+                    perf_campaigns['_campaign_key'] = self.clean_text(perf_campaigns['campaign_id'])
+    
+                    joined = campaigns.merge(perf_campaigns, on='_campaign_key', how='left')
+                    joined['clicks'] = joined['clicks'].fillna(0)
+                    joined['spend'] = joined['spend'].fillna(0)
                     joined['orders'] = joined['orders'].fillna(0)
+                    joined['roas'] = joined['roas'].fillna(0)
                     joined['current_budget'] = self.safe_numeric(joined[budget_col])
-                    joined['optimizer_action'] = joined.apply(lambda r: self._budget_action(r['roas'], r['orders']) if self.enable_budget_updates else None, axis=1)
+    
+                    joined['optimizer_action'] = joined.apply(
+                        lambda r: sd_budget_action(r) if self.enable_budget_updates else None,
+                        axis=1,
+                    )
                     joined = joined[joined['optimizer_action'].notna()].copy()
+    
                     if not joined.empty:
                         joined['new_budget'] = joined.apply(lambda r: self._adjust_budget(r['current_budget'], r['optimizer_action']), axis=1)
                         joined = joined[joined['new_budget'] != joined['current_budget']].copy()
+    
                         if not joined.empty:
                             joined[budget_col] = joined['new_budget']
                             joined['Operation'] = 'update'
@@ -2564,9 +2854,11 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
                             joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
                             joined['ad_group'] = ''
                             budget_updates.append(joined)
+    
         bid_updates_df = safe_concat_frames(bid_updates, ignore_index=True)
         budget_updates_df = safe_concat_frames(budget_updates, ignore_index=True)
         combined = safe_concat_frames([bid_updates_df, budget_updates_df], ignore_index=True)
+    
         summary = {
             'bid_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BID').sum()) if not combined.empty else 0,
             'bid_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BID').sum()) if not combined.empty else 0,
@@ -2575,10 +2867,23 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
             'harvested_keywords': 0,
             'negatives_added': 0,
         }
+    
+        diagnostics = pd.DataFrame([{
+            'ad_type': 'SD',
+            'perf_rows_loaded': len(perf),
+            'perf_rows_with_targeting_ids': perf_rows_with_targeting_ids,
+            'rows_above_click_floor': rows_above_click_floor,
+            'rows_zero_order_loss': rows_zero_order_loss,
+            'bid_rows_generated': len(bid_updates_df),
+            'budget_rows_generated': len(budget_updates_df),
+            'combined_rows_generated': len(combined),
+        }])
+    
         account_summary = {
             'total_spend': round(float(perf['spend'].sum()), 2),
             'total_sales': round(float(perf['sales'].sum()), 2),
         }
+    
         return {
             'ad_type': 'SD',
             'combined_bulk_updates': combined,
@@ -2591,6 +2896,7 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
             'smart_warnings': [],
             'optimization_suggestions': [],
             'pre_run_preview': summary,
+            'diagnostics': diagnostics,
         }
 
 
@@ -2712,6 +3018,7 @@ class Phase2AdsOrchestrator:
         all_budget_actions = []
         all_warnings = []
         all_suggestions = []
+        optimizer_diagnostics_frames = []
         sqp_opportunities = pd.DataFrame()
         sqp_summary = {}
         sp_account_health = {}
@@ -2724,6 +3031,8 @@ class Phase2AdsOrchestrator:
         if 'SP' in runnable:
             sp_out = self._sp_engine().process()
             per_type['SP'] = sp_out
+            if isinstance(sp_out.get('diagnostics'), pd.DataFrame) and not sp_out.get('diagnostics').empty:
+                optimizer_diagnostics_frames.append(sp_out.get('diagnostics'))
             execution_summary_rows.append({'ad_type':'SP','optimized':True,'status':'Optimized','actions':len(sp_out.get('combined_bulk_updates', pd.DataFrame())), 'spend':sp_out.get('account_summary',{}).get('total_spend',0.0)})
             for key, target in [('combined_bulk_updates', all_bulk_updates), ('bid_recommendations', all_bid_updates), ('search_term_actions', all_search_actions), ('campaign_budget_actions', all_budget_actions)]:
                 df = sp_out.get(key)
@@ -2750,6 +3059,8 @@ class Phase2AdsOrchestrator:
         if 'SB' in runnable:
             sb_out = self._sb_engine().process()
             per_type['SB'] = sb_out
+            if isinstance(sb_out.get('diagnostics'), pd.DataFrame) and not sb_out.get('diagnostics').empty:
+                optimizer_diagnostics_frames.append(sb_out.get('diagnostics'))
             execution_summary_rows.append({'ad_type':'SB','optimized':True,'status':'Optimized','actions':len(sb_out.get('combined_bulk_updates', pd.DataFrame())), 'spend':sb_out.get('account_summary',{}).get('total_spend',0.0)})
             for key, target in [('combined_bulk_updates', all_bulk_updates), ('bid_recommendations', all_bid_updates), ('search_term_actions', all_search_actions), ('campaign_budget_actions', all_budget_actions)]:
                 df = sb_out.get(key)
@@ -2770,6 +3081,8 @@ class Phase2AdsOrchestrator:
         if 'SD' in runnable:
             sd_out = self._sd_engine().process()
             per_type['SD'] = sd_out
+            if isinstance(sd_out.get('diagnostics'), pd.DataFrame) and not sd_out.get('diagnostics').empty:
+                optimizer_diagnostics_frames.append(sd_out.get('diagnostics'))
             execution_summary_rows.append({'ad_type':'SD','optimized':True,'status':'Optimized','actions':len(sd_out.get('combined_bulk_updates', pd.DataFrame())), 'spend':sd_out.get('account_summary',{}).get('total_spend',0.0)})
             for key, target in [('combined_bulk_updates', all_bulk_updates), ('bid_recommendations', all_bid_updates), ('search_term_actions', all_search_actions), ('campaign_budget_actions', all_budget_actions)]:
                 df = sd_out.get(key)
@@ -2788,6 +3101,7 @@ class Phase2AdsOrchestrator:
             execution_summary_rows.append({'ad_type':'SD','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sd_spend',0.0)})
 
         execution_summary = pd.DataFrame(execution_summary_rows)
+        optimizer_diagnostics = safe_concat_frames(optimizer_diagnostics_frames, ignore_index=True)
         combined_bulk_updates = safe_concat_frames(all_bulk_updates, ignore_index=True)
         bid_recommendations = safe_concat_frames(all_bid_updates, ignore_index=True)
         search_term_actions = safe_concat_frames(all_search_actions, ignore_index=True)
@@ -2822,4 +3136,5 @@ class Phase2AdsOrchestrator:
             'validation': validation,
             'per_type_outputs': per_type,
             'runnable_types': runnable,
+            'optimizer_diagnostics': optimizer_diagnostics,
         }
