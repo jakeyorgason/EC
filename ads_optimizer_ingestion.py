@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-class AdsOptimizerEngine:
+class LegacySponsoredProductsEngine:
     def __init__(
         self,
         bulk_file,
@@ -1778,3 +1778,539 @@ class AdsOptimizerEngine:
             "sqp_opportunities": sqp_opportunities,
             "sqp_summary": sqp_summary,
         }
+
+
+class AdsOptimizerEngine:
+    """
+    Backward-compatible engine that preserves the original Sponsored Products
+    workflow while layering in starter Sponsored Brands and Sponsored Display
+    actions whenever those tabs exist in the uploaded bulksheet.
+    """
+
+    def __init__(
+        self,
+        bulk_file,
+        search_term_file,
+        targeting_file,
+        impression_share_file,
+        business_report_file=None,
+        sqp_report_file=None,
+        min_roas=3.0,
+        min_clicks=8,
+        zero_order_click_threshold=12,
+        zero_order_action="Both",
+        strategy_mode="Balanced",
+        enable_bid_updates=True,
+        enable_search_harvesting=True,
+        enable_negative_keywords=True,
+        enable_budget_updates=True,
+        enable_tacos_control=False,
+        max_tacos_target=15.0,
+        enable_monthly_budget_control=False,
+        monthly_account_budget=0.0,
+        month_to_date_spend=0.0,
+        pacing_buffer_pct=5.0,
+        max_bid_cap=5.00,
+        max_budget_cap=500.00,
+        sb_search_term_file=None,
+    ):
+        self.bulk_file = bulk_file
+        self.search_term_file = search_term_file
+        self.targeting_file = targeting_file
+        self.impression_share_file = impression_share_file
+        self.business_report_file = business_report_file
+        self.sqp_report_file = sqp_report_file
+        self.sb_search_term_file = sb_search_term_file
+        self.min_roas = min_roas
+        self.min_clicks = min_clicks
+        self.zero_order_click_threshold = zero_order_click_threshold
+        self.zero_order_action = zero_order_action
+        self.strategy_mode = strategy_mode
+        self.enable_bid_updates = enable_bid_updates
+        self.enable_search_harvesting = enable_search_harvesting
+        self.enable_negative_keywords = enable_negative_keywords
+        self.enable_budget_updates = enable_budget_updates
+        self.enable_tacos_control = enable_tacos_control
+        self.max_tacos_target = max_tacos_target
+        self.enable_monthly_budget_control = enable_monthly_budget_control
+        self.monthly_account_budget = monthly_account_budget
+        self.month_to_date_spend = month_to_date_spend
+        self.pacing_buffer_pct = pacing_buffer_pct
+        self.max_bid_cap = max_bid_cap
+        self.max_budget_cap = max_budget_cap
+
+    def _clone_file_obj(self, file_obj):
+        if file_obj is None:
+            return None
+        if isinstance(file_obj, (str, bytes, os.PathLike)):
+            return file_obj
+        if isinstance(file_obj, io.BytesIO):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'getvalue'):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'read'):
+            try:
+                pos = file_obj.tell()
+            except Exception:
+                pos = None
+            try:
+                if hasattr(file_obj, 'seek'):
+                    file_obj.seek(0)
+                data = file_obj.read()
+            finally:
+                try:
+                    if pos is not None and hasattr(file_obj, 'seek'):
+                        file_obj.seek(pos)
+                except Exception:
+                    pass
+            return io.BytesIO(data)
+        raise ValueError('Unsupported file object type')
+
+    def _load_bulk_sheets(self):
+        bulk_clone = self._clone_file_obj(self.bulk_file)
+        return pd.read_excel(bulk_clone, sheet_name=None, engine='openpyxl')
+
+    def _load_optional_file(self, file_obj, header=0):
+        if file_obj is None:
+            return None
+        ext = os.path.splitext(getattr(file_obj, 'name', '') or '')[1].lower()
+        clone = self._clone_file_obj(file_obj)
+        if ext == '.csv':
+            return pd.read_csv(clone, header=header)
+        return pd.read_excel(clone, engine='openpyxl', header=header)
+
+    def _legacy_engine(self):
+        return LegacySponsoredProductsEngine(
+            bulk_file=self._clone_file_obj(self.bulk_file),
+            search_term_file=self._clone_file_obj(self.search_term_file),
+            targeting_file=self._clone_file_obj(self.targeting_file),
+            impression_share_file=self._clone_file_obj(self.impression_share_file),
+            business_report_file=self._clone_file_obj(self.business_report_file),
+            sqp_report_file=self._clone_file_obj(self.sqp_report_file),
+            min_roas=self.min_roas,
+            min_clicks=self.min_clicks,
+            zero_order_click_threshold=self.zero_order_click_threshold,
+            zero_order_action=self.zero_order_action,
+            strategy_mode=self.strategy_mode,
+            enable_bid_updates=self.enable_bid_updates,
+            enable_search_harvesting=self.enable_search_harvesting,
+            enable_negative_keywords=self.enable_negative_keywords,
+            enable_budget_updates=self.enable_budget_updates,
+            enable_tacos_control=self.enable_tacos_control,
+            max_tacos_target=self.max_tacos_target,
+            enable_monthly_budget_control=self.enable_monthly_budget_control,
+            monthly_account_budget=self.monthly_account_budget,
+            month_to_date_spend=self.month_to_date_spend,
+            pacing_buffer_pct=self.pacing_buffer_pct,
+            max_bid_cap=self.max_bid_cap,
+            max_budget_cap=self.max_budget_cap,
+        )
+
+    def _safe_numeric(self, series):
+        return pd.to_numeric(series, errors='coerce').fillna(0)
+
+    def _clean_text(self, series):
+        return series.fillna('').astype(str).str.strip()
+
+    def _norm_text(self, value):
+        return ' '.join(str(value or '').strip().lower().split())
+
+    def _make_bulk_row(self, product, entity, operation, campaign_id='', ad_group_id='', keyword_id='',
+                       campaign_name='', ad_group_name='', keyword_text='', match_type='', bid='',
+                       daily_budget='', optimizer_action=''):
+        return {
+            'Product': product,
+            'Entity': entity,
+            'Operation': operation,
+            'Campaign ID': campaign_id,
+            'Ad Group ID': ad_group_id,
+            'Keyword ID': keyword_id,
+            'Campaign Name': campaign_name,
+            'Ad Group Name': ad_group_name,
+            'State': 'Enabled',
+            'Keyword Text': keyword_text,
+            'Match Type': match_type,
+            'Bid': bid,
+            'Daily Budget': daily_budget,
+            'Optimizer Action': optimizer_action,
+        }
+
+    def _build_sb_bid_and_budget_actions(self, bulk_sheets):
+        frames = []
+        for name in ['Sponsored Brands Campaigns', 'SB Multi Ad Group Campaigns']:
+            df = bulk_sheets.get(name)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                frames.append(df.copy())
+        if not frames:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        sb = pd.concat(frames, ignore_index=True, sort=False)
+        sb['Entity'] = self._clean_text(sb.get('Entity', pd.Series(index=sb.index, dtype=str)))
+        sb['Campaign Name (Informational only)'] = self._clean_text(sb.get('Campaign Name (Informational only)', pd.Series(index=sb.index, dtype=str)))
+        sb['Campaign Name'] = self._clean_text(sb.get('Campaign Name', pd.Series(index=sb.index, dtype=str)))
+        sb['Ad Group Name (Informational only)'] = self._clean_text(sb.get('Ad Group Name (Informational only)', pd.Series(index=sb.index, dtype=str)))
+        sb['Ad Group Name'] = self._clean_text(sb.get('Ad Group Name', pd.Series(index=sb.index, dtype=str)))
+        sb['campaign_name_final'] = sb['Campaign Name'].where(sb['Campaign Name'] != '', sb['Campaign Name (Informational only)'])
+        sb['ad_group_name_final'] = sb['Ad Group Name'].where(sb['Ad Group Name'] != '', sb['Ad Group Name (Informational only)'])
+        for col in ['Clicks','Spend','Sales','Orders','Bid','Budget','Campaign ID','Ad Group ID','Keyword ID']:
+            if col in sb.columns:
+                sb[col] = self._safe_numeric(sb[col])
+        if 'ROAS' in sb.columns:
+            sb['roas'] = self._safe_numeric(sb['ROAS'])
+        else:
+            sb['roas'] = np.where(self._safe_numeric(sb.get('Spend', 0)) > 0, self._safe_numeric(sb.get('Sales', 0)) / self._safe_numeric(sb.get('Spend', 0)).replace(0, np.nan), 0)
+            sb['roas'] = pd.Series(sb['roas']).fillna(0)
+
+        keyword_like = sb[sb['Entity'].isin(['Keyword', 'Product Targeting'])].copy()
+        bid_rows = []
+        bid_recs = []
+        if not keyword_like.empty and self.enable_bid_updates:
+            for _, row in keyword_like.iterrows():
+                clicks = float(row.get('Clicks', 0) or 0)
+                sales = float(row.get('Sales', 0) or 0)
+                orders = float(row.get('Orders', 0) or 0)
+                bid = float(row.get('Bid', 0) or 0)
+                roas = float(row.get('roas', 0) or 0)
+                action = 'NO_ACTION'
+                new_bid = bid
+                if bid > 0 and clicks >= self.min_clicks and roas < self.min_roas:
+                    action = 'DECREASE_BID'
+                    new_bid = max(0.02, round(min(self.max_bid_cap, bid * 0.90), 2))
+                elif bid > 0 and orders >= 2 and roas >= (self.min_roas * 1.25):
+                    action = 'INCREASE_BID'
+                    new_bid = round(min(self.max_bid_cap, bid * 1.10), 2)
+                if action != 'NO_ACTION' and abs(new_bid - bid) >= 0.01:
+                    bid_recs.append({
+                        'ad_type': 'SB',
+                        'campaign_id': row.get('Campaign ID', ''),
+                        'ad_group_id': row.get('Ad Group ID', ''),
+                        'keyword_id': row.get('Keyword ID', ''),
+                        'campaign_name': row.get('campaign_name_final', ''),
+                        'ad_group_name': row.get('ad_group_name_final', ''),
+                        'target': row.get('Keyword Text') or row.get('Product Targeting Expression', ''),
+                        'match_type': row.get('Match Type', ''),
+                        'current_bid': bid,
+                        'recommended_bid': new_bid,
+                        'recommended_action': action,
+                        'clicks': clicks,
+                        'sales': sales,
+                        'orders': orders,
+                        'roas': roas,
+                    })
+                    bid_rows.append(self._make_bulk_row(
+                        product='Sponsored Brands',
+                        entity=row.get('Entity', 'Keyword'),
+                        operation='Update',
+                        campaign_id=row.get('Campaign ID', ''),
+                        ad_group_id=row.get('Ad Group ID', ''),
+                        keyword_id=row.get('Keyword ID', ''),
+                        campaign_name=row.get('campaign_name_final', ''),
+                        ad_group_name=row.get('ad_group_name_final', ''),
+                        keyword_text=row.get('Keyword Text', ''),
+                        match_type=row.get('Match Type', ''),
+                        bid=new_bid,
+                        optimizer_action=action,
+                    ))
+
+        campaign_df = sb[sb['Entity'] == 'Campaign'].copy()
+        budget_rows = []
+        budget_actions = []
+        if not campaign_df.empty and self.enable_budget_updates:
+            for _, row in campaign_df.iterrows():
+                clicks = float(row.get('Clicks', 0) or 0)
+                budget = float(row.get('Budget', 0) or 0)
+                sales = float(row.get('Sales', 0) or 0)
+                spend = float(row.get('Spend', 0) or 0)
+                orders = float(row.get('Orders', 0) or 0)
+                roas = float(row.get('roas', 0) or 0)
+                action = 'NO_ACTION'
+                rec_budget = budget
+                if budget > 0 and clicks >= self.min_clicks and roas < self.min_roas:
+                    action = 'DECREASE_BUDGET'
+                    rec_budget = round(min(self.max_budget_cap, max(1.0, budget * 0.90)), 2)
+                elif budget > 0 and orders >= 2 and roas >= (self.min_roas * 1.25):
+                    action = 'INCREASE_BUDGET'
+                    rec_budget = round(min(self.max_budget_cap, budget * 1.10), 2)
+                if action != 'NO_ACTION' and abs(rec_budget - budget) >= 0.01:
+                    budget_actions.append({
+                        'ad_type': 'SB',
+                        'campaign_id': row.get('Campaign ID', ''),
+                        'campaign_name': row.get('campaign_name_final', ''),
+                        'current_budget': budget,
+                        'recommended_daily_budget': rec_budget,
+                        'campaign_action': action,
+                        'sales': sales,
+                        'spend': spend,
+                        'orders': orders,
+                        'roas': roas,
+                    })
+                    budget_rows.append(self._make_bulk_row(
+                        product='Sponsored Brands',
+                        entity='Campaign',
+                        operation='Update',
+                        campaign_id=row.get('Campaign ID', ''),
+                        campaign_name=row.get('campaign_name_final', ''),
+                        daily_budget=rec_budget,
+                        optimizer_action=action,
+                    ))
+        search_actions = self._build_sb_search_actions(bulk_sheets)
+        return pd.DataFrame(bid_recs), search_actions, pd.DataFrame(budget_actions), pd.DataFrame(bid_rows + budget_rows)
+
+    def _build_sb_search_actions(self, bulk_sheets):
+        sb_search = self._load_optional_file(self.sb_search_term_file)
+        if sb_search is None:
+            sb_search = bulk_sheets.get('SB Search Term Report')
+        if sb_search is None or sb_search.empty:
+            return pd.DataFrame()
+        df = sb_search.copy()
+        for col in ['Clicks','Spend','Sales','Orders','Bid','Campaign ID','Ad Group ID']:
+            if col in df.columns:
+                df[col] = self._safe_numeric(df[col])
+        if 'ROAS' in df.columns:
+            df['roas'] = self._safe_numeric(df['ROAS'])
+        else:
+            df['roas'] = np.where(self._safe_numeric(df.get('Spend', 0)) > 0, self._safe_numeric(df.get('Sales', 0)) / self._safe_numeric(df.get('Spend', 0)).replace(0, np.nan), 0)
+            df['roas'] = pd.Series(df['roas']).fillna(0)
+        df['search_term'] = self._clean_text(df.get('Customer Search Term', pd.Series(index=df.index, dtype=str)))
+        df['campaign_name'] = self._clean_text(df.get('Campaign Name (Informational only)', pd.Series(index=df.index, dtype=str)))
+        df['ad_group_name'] = self._clean_text(df.get('Ad Group Name (Informational only)', pd.Series(index=df.index, dtype=str)))
+        actions = []
+        for _, row in df.iterrows():
+            st = row.get('search_term', '')
+            if not st:
+                continue
+            clicks = float(row.get('Clicks', 0) or 0)
+            orders = float(row.get('Orders', 0) or 0)
+            bid = float(row.get('Bid', 0) or 0)
+            roas = float(row.get('roas', 0) or 0)
+            action = 'NO_ACTION'
+            rec_bid = bid
+            if self.enable_search_harvesting and orders >= 2 and roas >= (self.min_roas * 1.15):
+                action = 'HARVEST_TO_EXACT'
+                rec_bid = round(min(self.max_bid_cap, max(0.02, bid)), 2)
+            elif self.enable_negative_keywords and clicks >= self.zero_order_click_threshold and orders == 0 and self.zero_order_action in ['Both', 'Add Negative']:
+                action = 'ADD_NEGATIVE_PHRASE'
+            elif self.enable_bid_updates and clicks >= self.zero_order_click_threshold and orders == 0 and self.zero_order_action in ['Both', 'Decrease Bid'] and bid > 0:
+                action = 'DECREASE_BID'
+                rec_bid = round(min(self.max_bid_cap, max(0.02, bid * 0.9)), 2)
+            if action != 'NO_ACTION':
+                actions.append({
+                    'ad_type': 'SB',
+                    'campaign_id': row.get('Campaign ID', ''),
+                    'ad_group_id': row.get('Ad Group ID', ''),
+                    'campaign_name': row.get('campaign_name', ''),
+                    'ad_group_name': row.get('ad_group_name', ''),
+                    'search_term': st,
+                    'search_term_action': action,
+                    'recommended_bid': rec_bid,
+                    'clicks': clicks,
+                    'orders': orders,
+                    'sales': row.get('Sales', 0),
+                    'spend': row.get('Spend', 0),
+                    'roas': roas,
+                })
+        return pd.DataFrame(actions)
+
+    def _build_sd_actions(self, bulk_sheets):
+        sd = bulk_sheets.get('Sponsored Display Campaigns')
+        if sd is None or sd.empty:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        df = sd.copy()
+        df['Entity'] = self._clean_text(df.get('Entity', pd.Series(index=df.index, dtype=str)))
+        df['Campaign Name (Informational only)'] = self._clean_text(df.get('Campaign Name (Informational only)', pd.Series(index=df.index, dtype=str)))
+        df['Ad Group Name (Informational only)'] = self._clean_text(df.get('Ad Group Name (Informational only)', pd.Series(index=df.index, dtype=str)))
+        for col in ['Clicks','Spend','Sales','Sales (Views & Clicks)','Orders','Orders (Views & Clicks)','Bid','Budget','Campaign ID','Ad Group ID','Targeting ID']:
+            if col in df.columns:
+                df[col] = self._safe_numeric(df[col])
+        sales_base = 'Sales (Views & Clicks)' if 'Sales (Views & Clicks)' in df.columns else 'Sales'
+        orders_base = 'Orders (Views & Clicks)' if 'Orders (Views & Clicks)' in df.columns else 'Orders'
+        df['effective_sales'] = self._safe_numeric(df.get(sales_base, 0))
+        df['effective_orders'] = self._safe_numeric(df.get(orders_base, 0))
+        df['roas'] = np.where(self._safe_numeric(df.get('Spend', 0)) > 0, df['effective_sales'] / self._safe_numeric(df.get('Spend', 0)).replace(0, np.nan), 0)
+        df['roas'] = pd.Series(df['roas']).fillna(0)
+        bid_df = df[df['Entity'].isin(['Audience Targeting','Contextual Targeting'])].copy()
+        bid_recs = []
+        bulk_rows = []
+        if self.enable_bid_updates:
+            for _, row in bid_df.iterrows():
+                bid = float(row.get('Bid', 0) or 0)
+                clicks = float(row.get('Clicks', 0) or 0)
+                orders = float(row.get('effective_orders', 0) or 0)
+                roas = float(row.get('roas', 0) or 0)
+                action = 'NO_ACTION'
+                new_bid = bid
+                if bid > 0 and clicks >= self.min_clicks and roas < self.min_roas:
+                    action = 'DECREASE_BID'
+                    new_bid = round(min(self.max_bid_cap, max(0.02, bid * 0.90)), 2)
+                elif bid > 0 and orders >= 2 and roas >= (self.min_roas * 1.15):
+                    action = 'INCREASE_BID'
+                    new_bid = round(min(self.max_bid_cap, bid * 1.10), 2)
+                if action != 'NO_ACTION' and abs(new_bid - bid) >= 0.01:
+                    bid_recs.append({
+                        'ad_type': 'SD',
+                        'campaign_id': row.get('Campaign ID', ''),
+                        'ad_group_id': row.get('Ad Group ID', ''),
+                        'keyword_id': row.get('Targeting ID', ''),
+                        'campaign_name': row.get('Campaign Name (Informational only)', ''),
+                        'ad_group_name': row.get('Ad Group Name (Informational only)', ''),
+                        'target': row.get('Resolved Targeting Expression (Informational only)') or row.get('Targeting Expression', ''),
+                        'match_type': row.get('Entity', ''),
+                        'current_bid': bid,
+                        'recommended_bid': new_bid,
+                        'recommended_action': action,
+                        'clicks': clicks,
+                        'sales': row.get('effective_sales', 0),
+                        'orders': orders,
+                        'roas': roas,
+                    })
+                    bulk_rows.append(self._make_bulk_row(
+                        product='Sponsored Display',
+                        entity=row.get('Entity', 'Contextual Targeting'),
+                        operation='Update',
+                        campaign_id=row.get('Campaign ID', ''),
+                        ad_group_id=row.get('Ad Group ID', ''),
+                        keyword_id=row.get('Targeting ID', ''),
+                        campaign_name=row.get('Campaign Name (Informational only)', ''),
+                        ad_group_name=row.get('Ad Group Name (Informational only)', ''),
+                        bid=new_bid,
+                        optimizer_action=action,
+                    ))
+        campaign_df = df[df['Entity'] == 'Campaign'].copy()
+        budget_actions = []
+        if self.enable_budget_updates:
+            for _, row in campaign_df.iterrows():
+                budget = float(row.get('Budget', 0) or 0)
+                clicks = float(row.get('Clicks', 0) or 0)
+                orders = float(row.get('effective_orders', 0) or 0)
+                roas = float(row.get('roas', 0) or 0)
+                action = 'NO_ACTION'
+                rec_budget = budget
+                if budget > 0 and clicks >= self.min_clicks and roas < self.min_roas:
+                    action = 'DECREASE_BUDGET'
+                    rec_budget = round(min(self.max_budget_cap, max(1.0, budget * 0.90)), 2)
+                elif budget > 0 and orders >= 2 and roas >= (self.min_roas * 1.15):
+                    action = 'INCREASE_BUDGET'
+                    rec_budget = round(min(self.max_budget_cap, budget * 1.10), 2)
+                if action != 'NO_ACTION' and abs(rec_budget - budget) >= 0.01:
+                    budget_actions.append({
+                        'ad_type': 'SD',
+                        'campaign_id': row.get('Campaign ID', ''),
+                        'campaign_name': row.get('Campaign Name (Informational only)', ''),
+                        'current_budget': budget,
+                        'recommended_daily_budget': rec_budget,
+                        'campaign_action': action,
+                        'sales': row.get('effective_sales', 0),
+                        'spend': row.get('Spend', 0),
+                        'orders': orders,
+                        'roas': roas,
+                    })
+                    bulk_rows.append(self._make_bulk_row(
+                        product='Sponsored Display',
+                        entity='Campaign',
+                        operation='Update',
+                        campaign_id=row.get('Campaign ID', ''),
+                        campaign_name=row.get('Campaign Name (Informational only)', ''),
+                        daily_budget=rec_budget,
+                        optimizer_action=action,
+                    ))
+        return pd.DataFrame(bid_recs), pd.DataFrame(budget_actions), pd.DataFrame(bulk_rows)
+
+    def analyze(self):
+        result = self._legacy_engine().analyze()
+        try:
+            bulk_sheets = self._load_bulk_sheets()
+            detected = []
+            if 'Sponsored Products Campaigns' in bulk_sheets:
+                detected.append('SP')
+            if 'Sponsored Brands Campaigns' in bulk_sheets or 'SB Multi Ad Group Campaigns' in bulk_sheets:
+                detected.append('SB')
+            if 'Sponsored Display Campaigns' in bulk_sheets or 'RAS Campaigns' in bulk_sheets:
+                detected.append('SD')
+            result = dict(result)
+            warnings = list(result.get('smart_warnings', []))
+            suggestions = list(result.get('optimization_suggestions', []))
+            summary = dict(result.get('account_summary', {}))
+            preview = dict(result.get('pre_run_preview', {}))
+            summary['detected_ad_types'] = ', '.join(detected)
+            if 'SB' in detected:
+                warnings.append('Sponsored Brands tabs were detected in the bulksheet. The full-fidelity engine preserves SP behavior and can append starter SB actions during processing.')
+                suggestions.append('Upload an SB Search Term Report when available so the engine can add SB harvest and negative recommendations with more context.')
+            if 'SD' in detected:
+                warnings.append('Sponsored Display tabs were detected in the bulksheet. SD actions are bulk-driven and do not depend on search-term harvesting.')
+                suggestions.append('Review SD tactic and target-level rows after the run, since SD logic is intentionally more conservative than SP.')
+            preview['ad_types_detected'] = len(detected)
+            result['smart_warnings'] = warnings
+            result['optimization_suggestions'] = suggestions
+            result['account_summary'] = summary
+            result['pre_run_preview'] = preview
+            result['detected_ad_types'] = detected
+        except Exception:
+            pass
+        return result
+
+    def process(self):
+        outputs = self._legacy_engine().process()
+        try:
+            bulk_sheets = self._load_bulk_sheets()
+            sb_bid_recs, sb_search_actions, sb_budget_actions, sb_bulk = self._build_sb_bid_and_budget_actions(bulk_sheets)
+            sd_bid_recs, sd_budget_actions, sd_bulk = self._build_sd_actions(bulk_sheets)
+
+            bid_recommendations = outputs.get('bid_recommendations', pd.DataFrame()).copy()
+            search_term_actions = outputs.get('search_term_actions', pd.DataFrame()).copy()
+            campaign_budget_actions = outputs.get('campaign_budget_actions', pd.DataFrame()).copy()
+            combined_bulk_updates = outputs.get('combined_bulk_updates', pd.DataFrame()).copy()
+
+            if not sb_bid_recs.empty:
+                bid_recommendations = pd.concat([bid_recommendations, sb_bid_recs], ignore_index=True, sort=False)
+            if not sd_bid_recs.empty:
+                bid_recommendations = pd.concat([bid_recommendations, sd_bid_recs], ignore_index=True, sort=False)
+            if not sb_search_actions.empty:
+                search_term_actions = pd.concat([search_term_actions, sb_search_actions], ignore_index=True, sort=False)
+            if not sb_budget_actions.empty:
+                campaign_budget_actions = pd.concat([campaign_budget_actions, sb_budget_actions], ignore_index=True, sort=False)
+            if not sd_budget_actions.empty:
+                campaign_budget_actions = pd.concat([campaign_budget_actions, sd_budget_actions], ignore_index=True, sort=False)
+            if not sb_bulk.empty:
+                combined_bulk_updates = pd.concat([combined_bulk_updates, sb_bulk], ignore_index=True, sort=False)
+            if not sd_bulk.empty:
+                combined_bulk_updates = pd.concat([combined_bulk_updates, sd_bulk], ignore_index=True, sort=False)
+
+            outputs['bid_recommendations'] = bid_recommendations
+            outputs['search_term_actions'] = search_term_actions
+            outputs['campaign_budget_actions'] = campaign_budget_actions
+            outputs['combined_bulk_updates'] = combined_bulk_updates
+
+            sim = dict(outputs.get('simulation_summary', {}))
+            if not combined_bulk_updates.empty and 'Optimizer Action' in combined_bulk_updates.columns:
+                sim['bid_increases'] = int((combined_bulk_updates['Optimizer Action'] == 'INCREASE_BID').sum())
+                sim['bid_decreases'] = int((combined_bulk_updates['Optimizer Action'] == 'DECREASE_BID').sum())
+                sim['negatives_added'] = int((combined_bulk_updates['Optimizer Action'] == 'ADD_NEGATIVE_PHRASE').sum())
+                sim['harvested_keywords'] = int((combined_bulk_updates['Optimizer Action'] == 'HARVEST_TO_EXACT').sum())
+                sim['budget_increases'] = int((combined_bulk_updates['Optimizer Action'] == 'INCREASE_BUDGET').sum())
+                sim['budget_decreases'] = int((combined_bulk_updates['Optimizer Action'] == 'DECREASE_BUDGET').sum())
+            outputs['simulation_summary'] = sim
+
+            smart_warnings = list(outputs.get('smart_warnings', []))
+            optimization_suggestions = list(outputs.get('optimization_suggestions', []))
+            if not sb_bulk.empty:
+                smart_warnings.append(f'Starter Sponsored Brands actions appended: {len(sb_bulk)} rows.')
+            if not sd_bulk.empty:
+                smart_warnings.append(f'Starter Sponsored Display actions appended: {len(sd_bulk)} rows.')
+            if not sb_search_actions.empty:
+                optimization_suggestions.append(f'Sponsored Brands search-term recommendations added: {len(sb_search_actions)} rows.')
+            outputs['smart_warnings'] = smart_warnings
+            outputs['optimization_suggestions'] = optimization_suggestions
+            outputs['detected_ad_types'] = [
+                ad for ad, present in {
+                    'SP': 'Sponsored Products Campaigns' in bulk_sheets,
+                    'SB': ('Sponsored Brands Campaigns' in bulk_sheets or 'SB Multi Ad Group Campaigns' in bulk_sheets),
+                    'SD': ('Sponsored Display Campaigns' in bulk_sheets or 'RAS Campaigns' in bulk_sheets),
+                }.items() if present
+            ]
+        except Exception as e:
+            smart_warnings = list(outputs.get('smart_warnings', []))
+            smart_warnings.append(f'Multi-ad augmentation skipped: {e}')
+            outputs['smart_warnings'] = smart_warnings
+        return outputs
+
+
+MultiAdOptimizerEngine = AdsOptimizerEngine
