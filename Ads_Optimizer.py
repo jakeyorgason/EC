@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
-from ads_optimizer_ingestion import AdsOptimizerEngine
+from ads_optimizer_ingestion import AdsOptimizerEngine, Phase1UploadValidator
 
 st.set_page_config(
     page_title="Evolved Commerce Amazon Ads Command Center",
@@ -936,10 +936,21 @@ with st.sidebar:
     st.markdown("## Required uploads")
     st.markdown(
         """
-1. Bulk Sheet  
-2. Search Term Report  
-3. Targeting Report  
-4. Impression Share Report
+Shared
+- Bulk Sheet
+- Sales and Traffic Business Report (optional)
+- Search Query Performance Report (optional)
+
+Sponsored Products
+- Search Term Report
+- Targeting Report
+- Impression Share Report
+
+Sponsored Brands
+- Search Term Report
+
+Sponsored Display
+- Targeting Report
 """
     )
 
@@ -1201,58 +1212,115 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-title">Upload Amazon Reports</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Upload the report set to unlock diagnostics, SQP context, and optimization preview.</div>',
+    '<div class="section-note">Phase 1 adds shared uploads, separate SP / SB / SD sections, readiness checks, and spend reconciliation before any optimization runs.</div>',
     unsafe_allow_html=True,
 )
 
-up1, up2 = st.columns(2)
-
-with up1:
-    bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"])
-    upload_status_line(bulk_file, "Bulk Sheet uploaded")
-
-    search_file = st.file_uploader("Search Term Report", type=["xlsx"])
-    upload_status_line(search_file, "Search Term Report uploaded")
-
-    targeting_file = st.file_uploader("Targeting Report", type=["xlsx"])
-    upload_status_line(targeting_file, "Targeting Report uploaded")
-
-with up2:
-    impression_file = st.file_uploader("Impression Share Report", type=["csv"])
-    upload_status_line(impression_file, "Impression Share Report uploaded")
-
-    business_file = st.file_uploader(
-        "Sales and Traffic Business Report (only required if TACOS Control is enabled)",
-        type=["xlsx", "csv"],
-    )
-    if business_file is not None:
-        st.success("Seller Central Business Report uploaded")
+with st.expander("Shared Uploads", expanded=True):
+    su1, su2 = st.columns(2)
+    with su1:
+        bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"], key="phase1_bulk")
+        upload_status_line(bulk_file, "Bulk Sheet uploaded")
+    with su2:
+        business_file = st.file_uploader(
+            "Sales and Traffic Business Report (optional — used for TACOS control)",
+            type=["xlsx", "csv"],
+            key="phase1_business",
+        )
+        if business_file is not None:
+            st.success("Seller Central Business Report uploaded")
 
     sqp_file = st.file_uploader(
         "Search Query Performance Report (optional — prior month, Simple View only)",
         type=["csv"],
+        key="phase1_sqp",
         help="Use the prior month's SQP report in Simple View only.",
     )
     if sqp_file is not None:
         st.success("Search Query Performance Report uploaded")
 
+with st.expander("Sponsored Products Uploads", expanded=True):
+    sp1, sp2, sp3 = st.columns(3)
+    with sp1:
+        sp_search_file = st.file_uploader("SP Search Term Report", type=["xlsx"], key="phase1_sp_search")
+        upload_status_line(sp_search_file, "SP Search Term Report uploaded")
+    with sp2:
+        sp_targeting_file = st.file_uploader("SP Targeting Report", type=["xlsx"], key="phase1_sp_targeting")
+        upload_status_line(sp_targeting_file, "SP Targeting Report uploaded")
+    with sp3:
+        sp_impression_file = st.file_uploader("SP Impression Share Report", type=["csv"], key="phase1_sp_impression")
+        upload_status_line(sp_impression_file, "SP Impression Share Report uploaded")
+
+with st.expander("Sponsored Brands Uploads", expanded=False):
+    sb1, sb2 = st.columns(2)
+    with sb1:
+        sb_search_file = st.file_uploader("SB Search Term Report", type=["xlsx"], key="phase1_sb_search")
+        upload_status_line(sb_search_file, "SB Search Term Report uploaded")
+    with sb2:
+        sb_impression_file = st.file_uploader(
+            "SB Impression Share Report (optional for future SIS logic)",
+            type=["csv", "xlsx"],
+            key="phase1_sb_impression",
+        )
+        upload_status_line(sb_impression_file, "SB Impression Share Report uploaded")
+
+with st.expander("Sponsored Display Uploads", expanded=False):
+    sd_targeting_file = st.file_uploader("SD Targeting Report", type=["xlsx"], key="phase1_sd_targeting")
+    upload_status_line(sd_targeting_file, "SD Targeting Report uploaded")
+
 bulk_bytes = get_uploaded_bytes(bulk_file)
-search_bytes = get_uploaded_bytes(search_file)
-targeting_bytes = get_uploaded_bytes(targeting_file)
-impression_bytes = get_uploaded_bytes(impression_file)
+sp_search_bytes = get_uploaded_bytes(sp_search_file)
+sp_targeting_bytes = get_uploaded_bytes(sp_targeting_file)
+sp_impression_bytes = get_uploaded_bytes(sp_impression_file)
+sb_search_bytes = get_uploaded_bytes(sb_search_file)
+sb_impression_bytes = get_uploaded_bytes(sb_impression_file)
+sd_targeting_bytes = get_uploaded_bytes(sd_targeting_file)
 business_bytes = get_uploaded_bytes(business_file)
 sqp_bytes = get_uploaded_bytes(sqp_file)
 
-required_ready = all([bulk_bytes, search_bytes, targeting_bytes, impression_bytes])
+validator = None
+validation = {}
+readiness = {}
+spend_summary = {}
+runnable_types = []
+bulk_sheet_names = []
+ad_types_in_bulk = {}
+
+if bulk_bytes is not None:
+    try:
+        validator = Phase1UploadValidator(
+            bulk_file=bytes_to_buffer(bulk_bytes),
+            business_report_file=bytes_to_buffer(business_bytes),
+            sqp_report_file=bytes_to_buffer(sqp_bytes),
+            sp_search_term_file=bytes_to_buffer(sp_search_bytes),
+            sp_targeting_file=bytes_to_buffer(sp_targeting_bytes),
+            sp_impression_share_file=bytes_to_buffer(sp_impression_bytes),
+            sb_search_term_file=bytes_to_buffer(sb_search_bytes),
+            sb_impression_share_file=bytes_to_buffer(sb_impression_bytes),
+            sd_targeting_file=bytes_to_buffer(sd_targeting_bytes),
+        )
+        validation = safe_dict(validator.analyze())
+        readiness = safe_dict(validation.get("readiness"))
+        spend_summary = safe_dict(validation.get("spend_summary"))
+        runnable_types = safe_list(validation.get("runnable_types"))
+        bulk_sheet_names = safe_list(validation.get("bulk_sheet_names"))
+        ad_types_in_bulk = safe_dict(validation.get("ad_types_in_bulk"))
+    except Exception as e:
+        st.error(f"Upload validation failed: {e}")
+
+sp_ready = safe_dict(readiness.get("SP")).get("ready", False)
+sb_ready = safe_dict(readiness.get("SB")).get("ready", False)
+sd_ready = safe_dict(readiness.get("SD")).get("ready", False)
+required_ready = bool(sp_ready)
 tacos_ready = (not enable_tacos_control) or (business_bytes is not None)
 
 
 def build_engine() -> AdsOptimizerEngine:
     return AdsOptimizerEngine(
         bulk_file=bytes_to_buffer(bulk_bytes),
-        search_term_file=bytes_to_buffer(search_bytes),
-        targeting_file=bytes_to_buffer(targeting_bytes),
-        impression_share_file=bytes_to_buffer(impression_bytes),
+        search_term_file=bytes_to_buffer(sp_search_bytes),
+        targeting_file=bytes_to_buffer(sp_targeting_bytes),
+        impression_share_file=bytes_to_buffer(sp_impression_bytes),
         business_report_file=bytes_to_buffer(business_bytes),
         sqp_report_file=bytes_to_buffer(sqp_bytes),
         min_roas=min_roas,
@@ -1275,6 +1343,17 @@ def build_engine() -> AdsOptimizerEngine:
     )
 
 
+def render_readiness_block(label: str, ready_state: dict, note: str = "") -> None:
+    status = str(ready_state.get("status", "Missing"))
+    tone = "good" if ready_state.get("ready") else ("warn" if status == "Partial" else "bad")
+    missing = safe_list(ready_state.get("missing_required"))
+    render_metric_card(label, status, tone=tone, small=True)
+    if missing:
+        st.caption("Missing: " + ", ".join(missing))
+    elif note:
+        st.caption(note)
+
+
 # =========================================================
 # Diagnostics
 # =========================================================
@@ -1288,9 +1367,59 @@ campaign_health_dashboard = pd.DataFrame()
 sqp_opportunities = pd.DataFrame()
 sqp_summary = {}
 
+st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Phase 1 Validation</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-note">Validate the upload set first. In Phase 1, the optimizer executes Sponsored Products only, while Sponsored Brands and Sponsored Display are validated and reconciled for future phases.</div>',
+    unsafe_allow_html=True,
+)
+
+vr1, vr2, vr3 = st.columns(3)
+with vr1:
+    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="SP optimizer can run in Phase 1.")
+with vr2:
+    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="Validation only in Phase 1.")
+with vr3:
+    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="Validation only in Phase 1.")
+
+if bulk_sheet_names:
+    st.caption("Bulk tabs found: " + ", ".join(bulk_sheet_names))
+
+if readiness:
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Spend Reconciliation</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">This separates SP, SB, and SD spend so you can compare the optimizer view to total account spend.</div>',
+        unsafe_allow_html=True,
+    )
+    sr1, sr2, sr3, sr4 = st.columns(4)
+    with sr1:
+        render_metric_card("SP Spend", f"${get_number(spend_summary.get('sp_spend')):,.2f}", tone="brand")
+    with sr2:
+        render_metric_card("SB Spend", f"${get_number(spend_summary.get('sb_spend')):,.2f}", tone="brand")
+    with sr3:
+        render_metric_card("SD Spend", f"${get_number(spend_summary.get('sd_spend')):,.2f}", tone="brand")
+    with sr4:
+        render_metric_card("Total Spend", f"${get_number(spend_summary.get('total_spend')):,.2f}", tone="good")
+
+    ss1, ss2, ss3, ss4 = st.columns(4)
+    with ss1:
+        render_metric_card("SP Sales", f"${get_number(spend_summary.get('sp_sales')):,.2f}", tone="brand")
+    with ss2:
+        render_metric_card("SB Sales", f"${get_number(spend_summary.get('sb_sales')):,.2f}", tone="brand")
+    with ss3:
+        render_metric_card("SD Sales", f"${get_number(spend_summary.get('sd_sales')):,.2f}", tone="brand")
+    with ss4:
+        render_metric_card("Total Sales", f"${get_number(spend_summary.get('total_sales')):,.2f}", tone="good")
+
+    if runnable_types:
+        st.success("Runnable ad types from the uploaded data: " + ", ".join(runnable_types))
+    else:
+        st.warning("No ad type has a complete required upload set yet.")
+
 if required_ready and tacos_ready:
     try:
-        with st.spinner("Reading account diagnostics..."):
+        with st.spinner("Reading SP diagnostics..."):
             diagnostics = build_engine().analyze()
 
         diagnostics = safe_dict(diagnostics)
@@ -1302,17 +1431,18 @@ if required_ready and tacos_ready:
         campaign_health_dashboard = safe_df(diagnostics.get("campaign_health_dashboard"))
         sqp_opportunities = safe_df(diagnostics.get("sqp_opportunities"))
         sqp_summary = safe_dict(diagnostics.get("sqp_summary"))
-
     except Exception as e:
-        st.error(f"Diagnostics failed: {e}")
+        st.error(f"SP diagnostics failed: {e}")
         diagnostics = None
+elif bulk_bytes is not None and not required_ready:
+    st.info("Phase 1 currently runs optimization only for Sponsored Products. Upload the SP Search Term, SP Targeting, and SP Impression Share reports to enable the optimizer.")
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 if diagnostics is not None:
-    st.markdown('<div class="section-title">Campaign Health Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Sponsored Products Diagnostics</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-note">A quick health read before generating any changes.</div>',
+        '<div class="section-note">A quick health read for the Sponsored Products optimizer before generating any changes.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1329,12 +1459,12 @@ if diagnostics is not None:
     dh1, dh2, dh3, dh4, dh5, dh6 = st.columns(6)
 
     with dh1:
-        render_metric_card("Ad Spend", f"${get_number(account_summary.get('total_spend')):,.2f}", tone="brand")
+        render_metric_card("SP Ad Spend", f"${get_number(account_summary.get('total_spend')):,.2f}", tone="brand")
     with dh2:
-        render_metric_card("Ad Sales", f"${get_number(account_summary.get('total_sales')):,.2f}", tone="brand")
+        render_metric_card("SP Ad Sales", f"${get_number(account_summary.get('total_sales')):,.2f}", tone="brand")
     with dh3:
         roas_tone = "good" if account_roas >= adjusted_min_roas else "bad"
-        render_metric_card("Account ROAS", f"{account_roas:.2f}", tone=roas_tone)
+        render_metric_card("SP Account ROAS", f"{account_roas:.2f}", tone=roas_tone)
     with dh4:
         render_metric_card("TACOS", str(tacos_display), tone="warn", small=True)
     with dh5:
@@ -1391,7 +1521,7 @@ if diagnostics is not None:
 
     st.markdown('<div class="section-title">Pre-Run Action Preview</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-note">Estimated actions based on the current settings and uploaded files.</div>',
+        '<div class="section-note">Estimated SP actions based on the current settings and uploaded files.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1411,7 +1541,7 @@ if diagnostics is not None:
         render_metric_card("Budget Decreases", str(get_int(preview.get("budget_decreases"))), tone="warn")
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    
+
     with st.expander("Campaign Health Table", expanded=False):
         if not campaign_health_dashboard.empty:
             st.dataframe(campaign_health_dashboard, use_container_width=True)
@@ -1441,8 +1571,6 @@ if diagnostics is not None:
     if enable_ai_review and api_key_present:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         st.info("AI optimization is enabled. After you run the optimizer, AI will automatically review low-confidence actions and use SQP context if available.")
-
-
 # =========================================================
 # Allowed actions summary
 # =========================================================
@@ -1500,11 +1628,11 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 button_col1, button_col2, button_col3 = st.columns([3, 2, 3])
 with button_col2:
-    run_optimizer = st.button("Run Optimization", type="primary", use_container_width=True)
+    run_optimizer = st.button("Run Sponsored Products Optimization", type="primary", use_container_width=True)
 
 if run_optimizer:
     if not required_ready:
-        st.error("Please upload bulk sheet, search term report, targeting report, and impression share report.")
+        st.error("Please upload the full Sponsored Products Phase 1 set: Bulk Sheet, SP Search Term Report, SP Targeting Report, and SP Impression Share Report.")
     elif enable_tacos_control and business_bytes is None:
         st.error("Please upload a Seller Central business report to use TACOS control.")
     else:
