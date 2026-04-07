@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
-from ads_optimizer_ingestion import AdsOptimizerEngine, Phase1UploadValidator
+from ads_optimizer_ingestion import AdsOptimizerEngine, Phase2UploadValidator, Phase2AdsOrchestrator
 
 st.set_page_config(
     page_title="Evolved Commerce Amazon Ads Command Center",
@@ -1212,7 +1212,7 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-title">Upload Amazon Reports</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Phase 1 adds shared uploads, separate SP / SB / SD sections, readiness checks, and spend reconciliation before any optimization runs.</div>',
+    '<div class="section-note">Phase 2 keeps the shared / SP / SB / SD upload sections, preserves the existing SP path, and adds starter Sponsored Brands and Sponsored Display optimization.</div>',
     unsafe_allow_html=True,
 )
 
@@ -1288,7 +1288,7 @@ ad_types_in_bulk = {}
 
 if bulk_bytes is not None:
     try:
-        validator = Phase1UploadValidator(
+        validator = Phase2UploadValidator(
             bulk_file=bytes_to_buffer(bulk_bytes),
             business_report_file=bytes_to_buffer(business_bytes),
             sqp_report_file=bytes_to_buffer(sqp_bytes),
@@ -1311,18 +1311,21 @@ if bulk_bytes is not None:
 sp_ready = safe_dict(readiness.get("SP")).get("ready", False)
 sb_ready = safe_dict(readiness.get("SB")).get("ready", False)
 sd_ready = safe_dict(readiness.get("SD")).get("ready", False)
-required_ready = bool(sp_ready)
+required_ready = bool(sp_ready or sb_ready or sd_ready)
 tacos_ready = (not enable_tacos_control) or (business_bytes is not None)
 
 
-def build_engine() -> AdsOptimizerEngine:
-    return AdsOptimizerEngine(
+def build_engine() -> Phase2AdsOrchestrator:
+    return Phase2AdsOrchestrator(
         bulk_file=bytes_to_buffer(bulk_bytes),
-        search_term_file=bytes_to_buffer(sp_search_bytes),
-        targeting_file=bytes_to_buffer(sp_targeting_bytes),
-        impression_share_file=bytes_to_buffer(sp_impression_bytes),
         business_report_file=bytes_to_buffer(business_bytes),
         sqp_report_file=bytes_to_buffer(sqp_bytes),
+        sp_search_term_file=bytes_to_buffer(sp_search_bytes),
+        sp_targeting_file=bytes_to_buffer(sp_targeting_bytes),
+        sp_impression_share_file=bytes_to_buffer(sp_impression_bytes),
+        sb_search_term_file=bytes_to_buffer(sb_search_bytes),
+        sb_impression_share_file=bytes_to_buffer(sb_impression_bytes),
+        sd_targeting_file=bytes_to_buffer(sd_targeting_bytes),
         min_roas=min_roas,
         min_clicks=min_clicks,
         zero_order_click_threshold=losing_kw_click_threshold,
@@ -1370,17 +1373,17 @@ sqp_summary = {}
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-title">Phase 1 Validation</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Validate the upload set first. In Phase 1, the optimizer executes Sponsored Products only, while Sponsored Brands and Sponsored Display are validated and reconciled for future phases.</div>',
+    '<div class="section-note">Validate the upload set first. In Phase 2, the app runs every ad type that has the required data and skips the rest.</div>',
     unsafe_allow_html=True,
 )
 
 vr1, vr2, vr3 = st.columns(3)
 with vr1:
-    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="SP optimizer can run in Phase 1.")
+    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="SP optimizer can run in Phase 2.")
 with vr2:
-    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="Validation only in Phase 1.")
+    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="SB starter optimizer can run in Phase 2 when the required uploads are present.")
 with vr3:
-    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="Validation only in Phase 1.")
+    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="SD starter optimizer can run in Phase 2 when the required uploads are present.")
 
 if bulk_sheet_names:
     st.caption("Bulk tabs found: " + ", ".join(bulk_sheet_names))
@@ -1435,7 +1438,7 @@ if required_ready and tacos_ready:
         st.error(f"SP diagnostics failed: {e}")
         diagnostics = None
 elif bulk_bytes is not None and not required_ready:
-    st.info("Phase 1 currently runs optimization only for Sponsored Products. Upload the SP Search Term, SP Targeting, and SP Impression Share reports to enable the optimizer.")
+    st.info("Phase 2 runs every ad type that is ready. Sponsored Products uses your existing optimizer path, while Sponsored Brands and Sponsored Display use starter bid / budget optimization logic.")
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1628,13 +1631,13 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 button_col1, button_col2, button_col3 = st.columns([3, 2, 3])
 with button_col2:
-    run_optimizer = st.button("Run Sponsored Products Optimization", type="primary", use_container_width=True)
+    run_optimizer = st.button("Run Available Ad Type Optimization", type="primary", use_container_width=True)
 
 if run_optimizer:
     if not required_ready:
-        st.error("Please upload the full Sponsored Products Phase 1 set: Bulk Sheet, SP Search Term Report, SP Targeting Report, and SP Impression Share Report.")
-    elif enable_tacos_control and business_bytes is None:
-        st.error("Please upload a Seller Central business report to use TACOS control.")
+        st.error("Please upload at least one complete ad-type set. SP requires Bulk + SP Search Term + SP Targeting + SP Impression Share. SB requires Bulk + SB Search Term. SD requires Bulk + SD Targeting.")
+    elif enable_tacos_control and business_bytes is None and sp_ready:
+        st.error("Please upload a Seller Central business report to use TACOS control for Sponsored Products.")
     else:
         try:
             with st.spinner("Analyzing campaigns and generating optimizations..."):
@@ -1663,6 +1666,8 @@ if "last_outputs" in st.session_state:
     output_account_summary = safe_dict(outputs.get("account_summary"))
     output_sqp_opportunities = safe_df(outputs.get("sqp_opportunities"))
     output_sqp_summary = safe_dict(outputs.get("sqp_summary"))
+    execution_summary = safe_df(outputs.get("execution_summary"))
+    runnable_types_output = safe_list(outputs.get("runnable_types"))
 
     ai_candidates_df = pd.DataFrame()
     ai_override_log_df = pd.DataFrame()
@@ -1723,9 +1728,25 @@ if "last_outputs" in st.session_state:
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="section-title">Execution Summary</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">Phase 2 runs each ad type independently. Anything missing required uploads is skipped without blocking the rest.</div>',
+        unsafe_allow_html=True,
+    )
+
+    if runnable_types_output:
+        st.success('Optimized ad types: ' + ', '.join(runnable_types_output))
+    else:
+        st.warning('No ad types were optimized in this run.')
+
+    if not execution_summary.empty:
+        st.dataframe(execution_summary, use_container_width=True)
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
     st.markdown('<div class="section-title">Optimization Summary</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-note">High-level actions generated by this run.</div>',
+        '<div class="section-note">High-level actions generated across all optimized ad types in this run.</div>',
         unsafe_allow_html=True,
     )
 
