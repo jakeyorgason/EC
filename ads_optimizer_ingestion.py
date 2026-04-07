@@ -1976,15 +1976,20 @@ class AdsOptimizerEngine:
         negative_bulk_updates = self.generate_negative_bulk_updates(search_term_actions)
         budget_bulk_updates = self.generate_budget_bulk_updates(campaign_budget_actions)
 
-        combined_bulk_updates = pd.concat(
-            [
+        bulk_update_frames = [
+            df for df in [
                 bid_bulk_updates,
                 harvest_bulk_updates,
                 negative_bulk_updates,
                 budget_bulk_updates,
-            ],
-            ignore_index=True,
-        )
+            ]
+            if df is not None and not df.empty
+        ]
+
+        if bulk_update_frames:
+            combined_bulk_updates = pd.concat(bulk_update_frames, ignore_index=True)
+        else:
+            combined_bulk_updates = pd.DataFrame()
 
         combined_bulk_updates = self.apply_final_safeguards(combined_bulk_updates)
         simulation_summary = self.build_simulation_summary(combined_bulk_updates, account_health)
