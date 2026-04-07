@@ -1423,7 +1423,7 @@ if readiness:
 if required_ready and tacos_ready:
     try:
         with st.spinner("Reading SP diagnostics..."):
-            diagnostics = build_engine().analyze()
+            diagnostics = build_engine().process()
 
         diagnostics = safe_dict(diagnostics)
         account_health = safe_dict(diagnostics.get("account_health"))
