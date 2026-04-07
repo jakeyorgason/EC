@@ -1748,7 +1748,7 @@ if "last_outputs" in st.session_state:
         st.dataframe(execution_summary, use_container_width=True)
     else:
         st.info('No execution summary available for this run.')
-    
+
     if not optimizer_diagnostics.empty:
         st.markdown('<div class="section-note">These diagnostics show why SB / SD may have produced few or no actions.</div>', unsafe_allow_html=True)
         st.dataframe(optimizer_diagnostics, use_container_width=True)
