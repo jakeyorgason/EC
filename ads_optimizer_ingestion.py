@@ -2745,3 +2745,7 @@ class Phase2AdsOrchestrator:
             'per_type_outputs': per_type,
             'runnable_types': runnable,
         }
+
+
+    def analyze(self):
+        return self.process()
