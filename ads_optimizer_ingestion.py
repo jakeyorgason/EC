@@ -394,6 +394,11 @@ class AdsOptimizerEngine:
         self.existing_any_keywords = set()
         self.existing_negative_keywords = set()
         self.keyword_capable_ad_groups = set()
+        
+        self.existing_keyword_keys_by_id = set()
+        self.existing_keyword_keys_by_name = set()
+        self.existing_negative_keys_by_id = set()
+        self.existing_negative_keys_by_name = set()
 
         self.apply_strategy_settings()
 
@@ -529,6 +534,67 @@ class AdsOptimizerEngine:
         cleaned = cleaned.replace("nan", "")
         cleaned = cleaned.str.replace(r"\.0$", "", regex=True)
         return cleaned
+
+    def normalize_term_text(self, value):
+        return " ".join(str(value).strip().lower().split())
+    
+    def normalize_match_type_value(self, value):
+        value = self.normalize_term_text(value)
+        mapping = {
+            "exact": "exact",
+            "phrase": "phrase",
+            "broad": "broad",
+            "negative exact": "negative exact",
+            "negative phrase": "negative phrase",
+            "negative_phrase": "negative phrase",
+            "negative_exact": "negative exact",
+        }
+        return mapping.get(value, value)
+    
+    def build_keyword_key_by_id(self, campaign_id, ad_group_id, keyword_text, match_type):
+        return "||".join([
+            self.clean_scalar(campaign_id),
+            self.clean_scalar(ad_group_id),
+            self.normalize_term_text(keyword_text),
+            self.normalize_match_type_value(match_type),
+        ])
+    
+    def build_keyword_key_by_name(self, campaign_name, ad_group_name, keyword_text, match_type):
+        return "||".join([
+            self.normalize_term_text(campaign_name),
+            self.normalize_term_text(ad_group_name),
+            self.normalize_term_text(keyword_text),
+            self.normalize_match_type_value(match_type),
+        ])
+    
+    def clean_scalar(self, value):
+        if pd.isna(value):
+            return ""
+        return str(value).strip().replace(".0", "")
+    
+    def is_valid_keyword_text(self, value):
+        term = self.normalize_term_text(value)
+    
+        if term == "":
+            return False
+        if len(term) < 3:
+            return False
+        if len(term) > 80:
+            return False
+        if len(term.split()) < 2:
+            return False
+    
+        invalid_exact_terms = {
+            "black sailcloth watch strap 20mm",
+        }
+        if term in invalid_exact_terms:
+            return False
+    
+        bad_chars = set(['[', ']', '{', '}', '|', ';'])
+        if any(ch in term for ch in bad_chars):
+            return False
+    
+        return True
 
     def clean_percent_series(self, series):
         cleaned = (
@@ -1265,58 +1331,112 @@ class AdsOptimizerEngine:
         )
 
         existing_keywords = df[df[entity_col] == "Keyword"].copy()
-        self.existing_any_keywords = set(
-            (
-                self.combine_preferred_columns(
-                    existing_keywords,
-                    ["Campaign Name"],
-                    ["Campaign Name (Informational only)"],
-                    "campaign name",
-                ).str.lower().str.strip()
-                + "||"
-                + self.combine_preferred_columns(
-                    existing_keywords,
-                    ["Ad Group Name"],
-                    ["Ad Group Name (Informational only)"],
-                    "ad group name",
-                ).str.lower().str.strip()
-                + "||"
-                + self.clean_text(existing_keywords[keyword_col])
-                .str.lower()
-                .str.strip()
-                .str.replace(r"\s+", " ", regex=True)
-            ).tolist()
-        )
 
+        if len(existing_keywords) > 0:
+            existing_keyword_campaign_names = self.combine_preferred_columns(
+                existing_keywords,
+                ["Campaign Name"],
+                ["Campaign Name (Informational only)"],
+                "campaign name",
+            )
+            existing_keyword_ad_group_names = self.combine_preferred_columns(
+                existing_keywords,
+                ["Ad Group Name"],
+                ["Ad Group Name (Informational only)"],
+                "ad group name",
+            )
+            existing_keyword_campaign_ids = self.clean_text(existing_keywords[campaign_id_col]) if campaign_id_col else pd.Series("", index=existing_keywords.index)
+            existing_keyword_ad_group_ids = self.clean_text(existing_keywords[ad_group_id_col]) if ad_group_id_col else pd.Series("", index=existing_keywords.index)
+            existing_keyword_texts = self.clean_text(existing_keywords[keyword_col]) if keyword_col else pd.Series("", index=existing_keywords.index)
+        
+            existing_match_col = self.get_optional_column(existing_keywords, ["Match Type"])
+            existing_keyword_match_types = self.clean_text(existing_keywords[existing_match_col]) if existing_match_col else pd.Series("Exact", index=existing_keywords.index)
+        
+            self.existing_keyword_keys_by_id = set()
+            self.existing_keyword_keys_by_name = set()
+            self.existing_any_keywords = set()
+        
+            for idx in existing_keywords.index:
+                key_by_id = self.build_keyword_key_by_id(
+                    existing_keyword_campaign_ids.loc[idx],
+                    existing_keyword_ad_group_ids.loc[idx],
+                    existing_keyword_texts.loc[idx],
+                    existing_keyword_match_types.loc[idx],
+                )
+                key_by_name = self.build_keyword_key_by_name(
+                    existing_keyword_campaign_names.loc[idx],
+                    existing_keyword_ad_group_names.loc[idx],
+                    existing_keyword_texts.loc[idx],
+                    existing_keyword_match_types.loc[idx],
+                )
+        
+                self.existing_keyword_keys_by_id.add(key_by_id)
+                self.existing_keyword_keys_by_name.add(key_by_name)
+        
+                self.existing_any_keywords.add(
+                    self.normalize_term_text(existing_keyword_campaign_names.loc[idx])
+                    + "||"
+                    + self.normalize_term_text(existing_keyword_ad_group_names.loc[idx])
+                    + "||"
+                    + self.normalize_term_text(existing_keyword_texts.loc[idx])
+                )
+        else:
+            self.existing_keyword_keys_by_id = set()
+            self.existing_keyword_keys_by_name = set()
+            self.existing_any_keywords = set()
+        
         existing_negatives = df[df[entity_col] == "Negative Keyword"].copy()
         if len(existing_negatives) > 0 and negative_keyword_text_col and negative_match_type_col:
-            self.existing_negative_keywords = set(
-                (
-                    self.combine_preferred_columns(
-                        existing_negatives,
-                        ["Campaign Name"],
-                        ["Campaign Name (Informational only)"],
-                        "campaign name",
-                    ).str.lower().str.strip()
-                    + "||"
-                    + self.combine_preferred_columns(
-                        existing_negatives,
-                        ["Ad Group Name"],
-                        ["Ad Group Name (Informational only)"],
-                        "ad group name",
-                    ).str.lower().str.strip()
-                    + "||"
-                    + self.clean_text(existing_negatives[negative_keyword_text_col])
-                    .str.lower()
-                    .str.strip()
-                    .str.replace(r"\s+", " ", regex=True)
-                    + "||"
-                    + self.clean_text(existing_negatives[negative_match_type_col])
-                    .str.lower()
-                    .str.strip()
-                ).tolist()
+            existing_negative_campaign_names = self.combine_preferred_columns(
+                existing_negatives,
+                ["Campaign Name"],
+                ["Campaign Name (Informational only)"],
+                "campaign name",
             )
+            existing_negative_ad_group_names = self.combine_preferred_columns(
+                existing_negatives,
+                ["Ad Group Name"],
+                ["Ad Group Name (Informational only)"],
+                "ad group name",
+            )
+            existing_negative_campaign_ids = self.clean_text(existing_negatives[campaign_id_col]) if campaign_id_col else pd.Series("", index=existing_negatives.index)
+            existing_negative_ad_group_ids = self.clean_text(existing_negatives[ad_group_id_col]) if ad_group_id_col else pd.Series("", index=existing_negatives.index)
+            existing_negative_texts = self.clean_text(existing_negatives[negative_keyword_text_col])
+            existing_negative_match_types = self.clean_text(existing_negatives[negative_match_type_col])
+        
+            self.existing_negative_keys_by_id = set()
+            self.existing_negative_keys_by_name = set()
+            self.existing_negative_keywords = set()
+        
+            for idx in existing_negatives.index:
+                key_by_id = self.build_keyword_key_by_id(
+                    existing_negative_campaign_ids.loc[idx],
+                    existing_negative_ad_group_ids.loc[idx],
+                    existing_negative_texts.loc[idx],
+                    existing_negative_match_types.loc[idx],
+                )
+                key_by_name = self.build_keyword_key_by_name(
+                    existing_negative_campaign_names.loc[idx],
+                    existing_negative_ad_group_names.loc[idx],
+                    existing_negative_texts.loc[idx],
+                    existing_negative_match_types.loc[idx],
+                )
+        
+                self.existing_negative_keys_by_id.add(key_by_id)
+                self.existing_negative_keys_by_name.add(key_by_name)
+        
+                self.existing_negative_keywords.add(
+                    self.normalize_term_text(existing_negative_campaign_names.loc[idx])
+                    + "||"
+                    + self.normalize_term_text(existing_negative_ad_group_names.loc[idx])
+                    + "||"
+                    + self.normalize_term_text(existing_negative_texts.loc[idx])
+                    + "||"
+                    + self.normalize_match_type_value(existing_negative_match_types.loc[idx])
+                )
         else:
+            self.existing_negative_keys_by_id = set()
+            self.existing_negative_keys_by_name = set()
             self.existing_negative_keywords = set()
 
         keyword_ad_groups = df[df[entity_col] == "Keyword"].copy()
@@ -1611,72 +1731,72 @@ class AdsOptimizerEngine:
     # -----------------------------
     def build_search_term_actions(self, search_terms_df, adjusted_min_roas):
         df = search_terms_df.copy()
-
+    
         targeting_lookup = (
             self.normalize_bulk_targets()[["campaign_name", "ad_group_name", "campaign_id", "ad_group_id"]]
             .drop_duplicates(subset=["campaign_name", "ad_group_name"])
         )
-
+    
         df = df.merge(
             targeting_lookup,
             on=["campaign_name", "ad_group_name"],
             how="left",
         )
-
+    
         actions = []
         recommended_bids = []
-
+    
         for _, row in df.iterrows():
             action = "NO_ACTION"
             rec_bid = min(max(round(row["cpc"] * 1.10, 2), 0.20), self.max_bid_cap)
-
+    
             campaign_name = str(row["campaign_name"]).strip()
             ad_group_name = str(row["ad_group_name"]).strip()
-            search_term = str(row["search_term"]).strip().lower()
-            match_type = str(row["match_type"]).strip().lower()
-
-            campaign_name_l = campaign_name.lower()
-            ad_group_name_l = ad_group_name.lower()
-            normalized_term = " ".join(search_term.split())
-
+            campaign_id = self.clean_scalar(row.get("campaign_id", ""))
+            ad_group_id = self.clean_scalar(row.get("ad_group_id", ""))
+            search_term = self.normalize_term_text(row.get("search_term", ""))
+            match_type = self.normalize_match_type_value(row.get("match_type", ""))
+    
+            campaign_name_l = self.normalize_term_text(campaign_name)
+            ad_group_name_l = self.normalize_term_text(ad_group_name)
+    
             is_auto_ad_group = (
                 "auto" in campaign_name_l
                 or "auto" in ad_group_name_l
                 or match_type in ["close-match", "loose-match", "substitutes", "complements"]
             )
-
-            ad_group_key = campaign_name_l.strip() + "||" + ad_group_name_l.strip()
-
-            keyword_exists_key = (
-                campaign_name_l.strip()
-                + "||"
-                + ad_group_name_l.strip()
-                + "||"
-                + normalized_term
+    
+            ad_group_key = campaign_name_l + "||" + ad_group_name_l
+    
+            keyword_exists_by_id = self.build_keyword_key_by_id(
+                campaign_id, ad_group_id, search_term, "Exact"
             )
-
-            negative_key = (
-                campaign_name_l.strip()
-                + "||"
-                + ad_group_name_l.strip()
-                + "||"
-                + normalized_term
-                + "||negative phrase"
+            keyword_exists_by_name = self.build_keyword_key_by_name(
+                campaign_name, ad_group_name, search_term, "Exact"
             )
-
+    
+            negative_exists_by_id = self.build_keyword_key_by_id(
+                campaign_id, ad_group_id, search_term, "Negative Phrase"
+            )
+            negative_exists_by_name = self.build_keyword_key_by_name(
+                campaign_name, ad_group_name, search_term, "Negative Phrase"
+            )
+    
             if (
                 self.enable_negative_keywords
                 and self.should_zero_order_negate()
                 and row["clicks"] >= max(self.zero_order_click_threshold, 20)
                 and row["orders"] == 0
                 and row["sales"] == 0
-                and normalized_term != ""
-                and negative_key not in self.existing_negative_keywords
-                and len(normalized_term.split()) >= 2
-                and not any(term in normalized_term for term in ["anchor straps"])
+                and search_term != ""
+                and self.is_valid_keyword_text(search_term)
+                and negative_exists_by_id not in self.existing_negative_keys_by_id
+                and negative_exists_by_name not in self.existing_negative_keys_by_name
+                and len(search_term.split()) >= 2
+                and not any(term in search_term for term in ["anchor straps"])
             ):
                 action = "ADD_NEGATIVE_PHRASE"
-
+    
             elif (
                 self.enable_search_harvesting
                 and not is_auto_ad_group
@@ -1685,14 +1805,16 @@ class AdsOptimizerEngine:
                 and row["clicks"] >= 5
                 and row["roas"] >= max(adjusted_min_roas, self.min_roas)
                 and match_type != "exact"
-                and normalized_term != ""
-                and keyword_exists_key not in self.existing_any_keywords
+                and search_term != ""
+                and self.is_valid_keyword_text(search_term)
+                and keyword_exists_by_id not in self.existing_keyword_keys_by_id
+                and keyword_exists_by_name not in self.existing_keyword_keys_by_name
             ):
                 action = "HARVEST_TO_EXACT"
-
+    
             actions.append(action)
             recommended_bids.append(rec_bid)
-
+    
         df["search_term_action"] = actions
         df["recommended_bid"] = recommended_bids
         return df
@@ -1790,32 +1912,56 @@ class AdsOptimizerEngine:
         actionable = search_term_actions_df[
             search_term_actions_df["search_term_action"] == "HARVEST_TO_EXACT"
         ].copy()
-
+    
         actionable = actionable[
             actionable["campaign_id"].fillna("").astype(str).str.strip() != ""
         ]
         actionable = actionable[
             actionable["ad_group_id"].fillna("").astype(str).str.strip() != ""
         ]
-
+    
         actionable["normalized_term"] = (
             actionable["search_term"]
             .fillna("")
             .astype(str)
-            .str.lower()
-            .str.strip()
-            .str.replace(r"\s+", " ", regex=True)
+            .apply(self.normalize_term_text)
         )
-
+    
         actionable["ad_group_key"] = (
-            actionable["campaign_name"].fillna("").astype(str).str.lower().str.strip()
+            actionable["campaign_name"].fillna("").astype(str).apply(self.normalize_term_text)
             + "||"
-            + actionable["ad_group_name"].fillna("").astype(str).str.lower().str.strip()
+            + actionable["ad_group_name"].fillna("").astype(str).apply(self.normalize_term_text)
         )
-
+    
         actionable = actionable[actionable["normalized_term"] != ""]
+        actionable = actionable[actionable["normalized_term"].apply(self.is_valid_keyword_text)]
         actionable = actionable[actionable["ad_group_key"].isin(self.keyword_capable_ad_groups)]
-
+    
+        actionable["existing_key_by_id"] = actionable.apply(
+            lambda row: self.build_keyword_key_by_id(
+                row["campaign_id"], row["ad_group_id"], row["normalized_term"], "Exact"
+            ),
+            axis=1,
+        )
+        actionable["existing_key_by_name"] = actionable.apply(
+            lambda row: self.build_keyword_key_by_name(
+                row["campaign_name"], row["ad_group_name"], row["normalized_term"], "Exact"
+            ),
+            axis=1,
+        )
+    
+        actionable = actionable[
+            ~actionable["existing_key_by_id"].isin(self.existing_keyword_keys_by_id)
+        ]
+        actionable = actionable[
+            ~actionable["existing_key_by_name"].isin(self.existing_keyword_keys_by_name)
+        ]
+    
+        actionable = actionable.drop_duplicates(
+            subset=["campaign_id", "ad_group_id", "normalized_term"],
+            keep="first",
+        )
+    
         bulk = pd.DataFrame(index=actionable.index)
         bulk["Product"] = "Sponsored Products"
         bulk["Entity"] = "Keyword"
@@ -1831,37 +1977,56 @@ class AdsOptimizerEngine:
         bulk["Bid"] = actionable["recommended_bid"]
         bulk["Daily Budget"] = ""
         bulk["Optimizer Action"] = actionable["search_term_action"]
-
+    
         return bulk.reset_index(drop=True)
 
     def generate_negative_bulk_updates(self, search_term_actions_df):
         actionable = search_term_actions_df[
             search_term_actions_df["search_term_action"] == "ADD_NEGATIVE_PHRASE"
         ].copy()
-
+    
         actionable = actionable[
             actionable["campaign_id"].fillna("").astype(str).str.strip() != ""
         ]
         actionable = actionable[
             actionable["ad_group_id"].fillna("").astype(str).str.strip() != ""
         ]
-
+    
         actionable["normalized_term"] = (
             actionable["search_term"]
             .fillna("")
             .astype(str)
-            .str.lower()
-            .str.strip()
-            .str.replace(r"\s+", " ", regex=True)
+            .apply(self.normalize_term_text)
         )
-
+    
         actionable = actionable[actionable["normalized_term"] != ""]
-
+        actionable = actionable[actionable["normalized_term"].apply(self.is_valid_keyword_text)]
+    
+        actionable["existing_key_by_id"] = actionable.apply(
+            lambda row: self.build_keyword_key_by_id(
+                row["campaign_id"], row["ad_group_id"], row["normalized_term"], "Negative Phrase"
+            ),
+            axis=1,
+        )
+        actionable["existing_key_by_name"] = actionable.apply(
+            lambda row: self.build_keyword_key_by_name(
+                row["campaign_name"], row["ad_group_name"], row["normalized_term"], "Negative Phrase"
+            ),
+            axis=1,
+        )
+    
+        actionable = actionable[
+            ~actionable["existing_key_by_id"].isin(self.existing_negative_keys_by_id)
+        ]
+        actionable = actionable[
+            ~actionable["existing_key_by_name"].isin(self.existing_negative_keys_by_name)
+        ]
+    
         actionable = actionable.drop_duplicates(
             subset=["campaign_id", "ad_group_id", "normalized_term"],
             keep="first",
         )
-
+    
         bulk = pd.DataFrame(index=actionable.index)
         bulk["Product"] = "Sponsored Products"
         bulk["Entity"] = "Negative Keyword"
@@ -1877,7 +2042,7 @@ class AdsOptimizerEngine:
         bulk["Bid"] = ""
         bulk["Daily Budget"] = ""
         bulk["Optimizer Action"] = actionable["search_term_action"]
-
+    
         return bulk.reset_index(drop=True)
 
     def generate_budget_bulk_updates(self, campaign_budget_actions_df):
@@ -1950,18 +2115,23 @@ class AdsOptimizerEngine:
 
         df = df.drop_duplicates()
 
+        for col in ["Keyword Text", "Match Type", "Campaign Name", "Ad Group Name"]:
+            if col in df.columns:
+                df[col] = df[col].fillna("").astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+        
         signature_cols = [
+            "Product",
             "Entity",
+            "Operation",
             "Campaign ID",
             "Ad Group ID",
             "Campaign Name",
             "Ad Group Name",
             "Keyword Text",
             "Match Type",
-            "Operation",
         ]
         existing_signature_cols = [c for c in signature_cols if c in df.columns]
-
+        
         if existing_signature_cols:
             df = df.drop_duplicates(subset=existing_signature_cols, keep="last")
 
