@@ -1212,7 +1212,7 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-title">Upload Amazon Reports</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Phase 2 keeps the shared / SP / SB / SD upload sections, preserves the existing SP path, and adds starter Sponsored Brands and Sponsored Display optimization.</div>',
+    '<div class="section-note">Phase 1 adds shared uploads, separate SP / SB / SD sections, readiness checks, and spend reconciliation before any optimization runs.</div>',
     unsafe_allow_html=True,
 )
 
@@ -1311,7 +1311,7 @@ if bulk_bytes is not None:
 sp_ready = safe_dict(readiness.get("SP")).get("ready", False)
 sb_ready = safe_dict(readiness.get("SB")).get("ready", False)
 sd_ready = safe_dict(readiness.get("SD")).get("ready", False)
-required_ready = bool(sp_ready or sb_ready or sd_ready)
+required_ready = bool(sp_ready)
 tacos_ready = (not enable_tacos_control) or (business_bytes is not None)
 
 
@@ -1373,17 +1373,17 @@ sqp_summary = {}
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-title">Phase 1 Validation</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Validate the upload set first. In Phase 2, the app runs every ad type that has the required data and skips the rest.</div>',
+    '<div class="section-note">Validate the upload set first. In Phase 1, the optimizer executes Sponsored Products only, while Sponsored Brands and Sponsored Display are validated and reconciled for future phases.</div>',
     unsafe_allow_html=True,
 )
 
 vr1, vr2, vr3 = st.columns(3)
 with vr1:
-    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="SP optimizer can run in Phase 2.")
+    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="SP optimizer can run in Phase 1.")
 with vr2:
-    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="SB starter optimizer can run in Phase 2 when the required uploads are present.")
+    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="Validation only in Phase 1.")
 with vr3:
-    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="SD starter optimizer can run in Phase 2 when the required uploads are present.")
+    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="Validation only in Phase 1.")
 
 if bulk_sheet_names:
     st.caption("Bulk tabs found: " + ", ".join(bulk_sheet_names))
@@ -1423,7 +1423,7 @@ if readiness:
 if required_ready and tacos_ready:
     try:
         with st.spinner("Reading SP diagnostics..."):
-            diagnostics = build_engine().process()
+            diagnostics = build_engine().analyze()
 
         diagnostics = safe_dict(diagnostics)
         account_health = safe_dict(diagnostics.get("account_health"))
@@ -1438,7 +1438,7 @@ if required_ready and tacos_ready:
         st.error(f"SP diagnostics failed: {e}")
         diagnostics = None
 elif bulk_bytes is not None and not required_ready:
-    st.info("Phase 2 runs every ad type that is ready. Sponsored Products uses your existing optimizer path, while Sponsored Brands and Sponsored Display use starter bid / budget optimization logic.")
+    st.info("Upload the required report set for any ad type to enable optimization. Sponsored Products still powers the deepest diagnostics.")
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1631,18 +1631,18 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 button_col1, button_col2, button_col3 = st.columns([3, 2, 3])
 with button_col2:
-    run_optimizer = st.button("Run Available Ad Type Optimization", type="primary", use_container_width=True)
+    run_optimizer = st.button("Run Optimization for Available Ad Types", type="primary", use_container_width=True)
 
 if run_optimizer:
-    if not required_ready:
-        st.error("Please upload at least one complete ad-type set. SP requires Bulk + SP Search Term + SP Targeting + SP Impression Share. SB requires Bulk + SB Search Term. SD requires Bulk + SD Targeting.")
+    if not runnable_types:
+        st.error("Please upload the required report set for at least one ad type. The readiness cards above show what is still missing for SP, SB, and SD.")
     elif enable_tacos_control and business_bytes is None and sp_ready:
-        st.error("Please upload a Seller Central business report to use TACOS control for Sponsored Products.")
+        st.error("Please upload a Seller Central business report to use TACOS control.")
     else:
         try:
-            with st.spinner("Analyzing campaigns and generating optimizations..."):
+            with st.spinner("Analyzing campaigns and generating multi-ad-type optimizations..."):
                 st.session_state["last_outputs"] = build_engine().process()
-            st.success("Optimization complete.")
+            st.success("Optimization complete for all runnable ad types.")
         except Exception as e:
             st.error(f"Optimization failed: {e}")
 
@@ -1667,7 +1667,8 @@ if "last_outputs" in st.session_state:
     output_sqp_opportunities = safe_df(outputs.get("sqp_opportunities"))
     output_sqp_summary = safe_dict(outputs.get("sqp_summary"))
     execution_summary = safe_df(outputs.get("execution_summary"))
-    runnable_types_output = safe_list(outputs.get("runnable_types"))
+    per_type_outputs = safe_dict(outputs.get("per_type_outputs"))
+    output_runnable_types = safe_list(outputs.get("runnable_types"))
 
     ai_candidates_df = pd.DataFrame()
     ai_override_log_df = pd.DataFrame()
@@ -1730,23 +1731,28 @@ if "last_outputs" in st.session_state:
 
     st.markdown('<div class="section-title">Execution Summary</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-note">Phase 2 runs each ad type independently. Anything missing required uploads is skipped without blocking the rest.</div>',
+        '<div class="section-note">Which ad types ran in this pass, and how many actions each contributed.</div>',
         unsafe_allow_html=True,
     )
 
-    if runnable_types_output:
-        st.success('Optimized ad types: ' + ', '.join(runnable_types_output))
-    else:
-        st.warning('No ad types were optimized in this run.')
+    es1, es2, es3 = st.columns(3)
+    with es1:
+        render_metric_card('Runnable Types', str(len(output_runnable_types)), tone='good' if output_runnable_types else 'warn')
+    with es2:
+        render_metric_card('Bulk Actions', str(len(combined_bulk_updates)), tone='brand')
+    with es3:
+        render_metric_card('Ad Types with Output', str(len(per_type_outputs)), tone='brand')
 
     if not execution_summary.empty:
         st.dataframe(execution_summary, use_container_width=True)
+    else:
+        st.info('No execution summary available for this run.')
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">Optimization Summary</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-note">High-level actions generated across all optimized ad types in this run.</div>',
+        '<div class="section-note">High-level actions generated by this run.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1844,6 +1850,7 @@ if "last_outputs" in st.session_state:
     )
 
     tab_names = [
+        "Execution Summary",
         "Bulk Upload",
         "Bid Recommendations",
         "Search Term Actions",
@@ -1851,7 +1858,13 @@ if "last_outputs" in st.session_state:
         "SQP Opportunities",
         "AI Override Log",
     ]
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(tab_names)
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(tab_names)
+
+    with tab0:
+        if not execution_summary.empty:
+            st.dataframe(execution_summary, use_container_width=True)
+        else:
+            st.info("No execution summary available.")
 
     with tab1:
         if not combined_bulk_updates.empty:
@@ -1950,6 +1963,26 @@ if "last_outputs" in st.session_state:
             file_name="campaign_budget_actions.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_campaign_budget_actions_xlsx",
+            use_container_width=True,
+        )
+
+    if not execution_summary.empty:
+        st.download_button(
+            label="Download Execution Summary",
+            data=to_excel_bytes(execution_summary),
+            file_name="execution_summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_execution_summary_xlsx",
+            use_container_width=True,
+        )
+
+    if not execution_summary.empty:
+        st.download_button(
+            label="Download Execution Summary",
+            data=to_excel_bytes(execution_summary),
+            file_name="execution_summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_execution_summary_xlsx",
             use_container_width=True,
         )
 
