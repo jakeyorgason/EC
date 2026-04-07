@@ -2040,3 +2040,708 @@ class AdsOptimizerEngine:
             "sqp_opportunities": sqp_opportunities,
             "sqp_summary": sqp_summary,
         }
+
+# =========================================================
+# Phase 2 additive multi-ad-type orchestration
+# =========================================================
+
+class Phase2UploadValidator(Phase1UploadValidator):
+    """Phase 2 validator currently reuses the Phase 1 validation logic."""
+    pass
+
+
+class _Phase2BaseOptimizer:
+    def __init__(
+        self,
+        bulk_file,
+        min_roas=3.0,
+        min_clicks=8,
+        zero_order_click_threshold=12,
+        zero_order_action="Both",
+        strategy_mode="Balanced",
+        enable_bid_updates=True,
+        enable_search_harvesting=True,
+        enable_negative_keywords=True,
+        enable_budget_updates=True,
+        max_bid_cap=5.0,
+        max_budget_cap=500.0,
+    ):
+        self.bulk_file = bulk_file
+        self.min_roas = float(min_roas)
+        self.min_clicks = int(min_clicks)
+        self.zero_order_click_threshold = int(zero_order_click_threshold)
+        self.zero_order_action = zero_order_action
+        self.strategy_mode = strategy_mode
+        self.enable_bid_updates = enable_bid_updates
+        self.enable_search_harvesting = enable_search_harvesting
+        self.enable_negative_keywords = enable_negative_keywords
+        self.enable_budget_updates = enable_budget_updates
+        self.max_bid_cap = float(max_bid_cap)
+        self.max_budget_cap = float(max_budget_cap)
+        self.apply_strategy_settings()
+
+    def apply_strategy_settings(self):
+        mode = str(self.strategy_mode).strip().lower()
+        if mode == 'conservative':
+            self.max_bid_up = 0.05
+            self.max_bid_down = 0.10
+            self.scale_roas_multiplier = 1.40
+            self.budget_up_pct = 0.05
+            self.budget_down_pct = 0.08
+            self.min_orders_for_scaling = 3
+        elif mode == 'aggressive':
+            self.max_bid_up = 0.20
+            self.max_bid_down = 0.25
+            self.scale_roas_multiplier = 1.10
+            self.budget_up_pct = 0.15
+            self.budget_down_pct = 0.12
+            self.min_orders_for_scaling = 2
+        else:
+            self.max_bid_up = 0.10
+            self.max_bid_down = 0.15
+            self.scale_roas_multiplier = 1.25
+            self.budget_up_pct = 0.10
+            self.budget_down_pct = 0.10
+            self.min_orders_for_scaling = 2
+
+    def _clone_file_obj(self, file_obj):
+        if file_obj is None:
+            return None
+        if isinstance(file_obj, (str, bytes, os.PathLike)):
+            return file_obj
+        if isinstance(file_obj, io.BytesIO):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'getvalue'):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'read'):
+            try:
+                pos = file_obj.tell()
+            except Exception:
+                pos = None
+            try:
+                if hasattr(file_obj, 'seek'):
+                    file_obj.seek(0)
+                data = file_obj.read()
+            finally:
+                try:
+                    if pos is not None and hasattr(file_obj, 'seek'):
+                        file_obj.seek(pos)
+                except Exception:
+                    pass
+            return io.BytesIO(data)
+        raise ValueError('Unsupported file object type.')
+
+    def load_file(self, file_obj):
+        if file_obj is None:
+            return None
+        name = getattr(file_obj, 'name', '') if not isinstance(file_obj, (str, os.PathLike)) else str(file_obj)
+        ext = os.path.splitext(name)[1].lower()
+        cloned = self._clone_file_obj(file_obj)
+        if ext == '.csv':
+            return pd.read_csv(cloned)
+        return pd.read_excel(cloned, engine='openpyxl')
+
+    def load_bulk_workbook(self):
+        return pd.read_excel(self._clone_file_obj(self.bulk_file), sheet_name=None, engine='openpyxl')
+
+    def safe_numeric(self, series):
+        if series is None:
+            return pd.Series(dtype=float)
+        cleaned = (
+            series.fillna('')
+            .astype(str)
+            .str.replace(',', '', regex=False)
+            .str.replace('$', '', regex=False)
+            .str.replace('%', '', regex=False)
+            .str.replace(r'\(([^\)]+)\)', r'-\1', regex=True)
+            .str.strip()
+        )
+        return pd.to_numeric(cleaned, errors='coerce').fillna(0)
+
+    def first_present(self, df, cols, default=0.0):
+        for col in cols:
+            if col in df.columns:
+                return self.safe_numeric(df[col])
+        return pd.Series(default, index=df.index if hasattr(df, 'index') else None, dtype=float)
+
+    def clean_text(self, series):
+        return series.fillna('').astype(str).str.strip()
+
+    def _budget_action(self, roas, orders):
+        if orders >= self.min_orders_for_scaling and roas >= self.min_roas * self.scale_roas_multiplier:
+            return 'INCREASE_BUDGET'
+        if roas > 0 and roas < self.min_roas:
+            return 'DECREASE_BUDGET'
+        return None
+
+    def _bid_action(self, roas, clicks, orders):
+        if clicks >= self.zero_order_click_threshold and orders == 0:
+            if self.zero_order_action in {'Decrease Bid', 'Both'}:
+                return 'DECREASE_BID'
+        if clicks >= self.min_clicks and roas > 0 and roas < self.min_roas:
+            return 'DECREASE_BID'
+        if orders >= self.min_orders_for_scaling and roas >= self.min_roas * self.scale_roas_multiplier:
+            return 'INCREASE_BID'
+        return None
+
+    def _adjust_bid(self, current_bid, action):
+        bid = float(current_bid or 0)
+        if bid <= 0:
+            return 0.0
+        if action == 'INCREASE_BID':
+            bid = min(self.max_bid_cap, bid * (1 + self.max_bid_up))
+        elif action == 'DECREASE_BID':
+            bid = max(0.02, bid * (1 - self.max_bid_down))
+        return round(bid, 2)
+
+    def _adjust_budget(self, current_budget, action):
+        budget = float(current_budget or 0)
+        if budget <= 0:
+            return 0.0
+        if action == 'INCREASE_BUDGET':
+            budget = min(self.max_budget_cap, budget * (1 + self.budget_up_pct))
+        elif action == 'DECREASE_BUDGET':
+            budget = max(1.0, budget * (1 - self.budget_down_pct))
+        return round(budget, 2)
+
+
+class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
+    def __init__(self, bulk_file, search_term_file=None, impression_share_file=None, **kwargs):
+        super().__init__(bulk_file=bulk_file, **kwargs)
+        self.search_term_file = search_term_file
+        self.impression_share_file = impression_share_file
+
+    def _load_search_terms(self):
+        df = self.load_file(self.search_term_file) if self.search_term_file is not None else None
+        if df is None or df.empty:
+            wb = self.load_bulk_workbook()
+            df = wb.get('SB Search Term Report')
+        if df is None or df.empty:
+            return pd.DataFrame()
+        out = df.copy()
+        out['campaign_id'] = self.clean_text(out.get('Campaign ID', pd.Series('', index=out.index)))
+        out['ad_group_id'] = self.clean_text(out.get('Ad Group ID', pd.Series('', index=out.index)))
+        out['keyword_id'] = self.clean_text(out.get('Keyword ID', pd.Series('', index=out.index)))
+        out['product_targeting_id'] = self.clean_text(out.get('Product Targeting ID', pd.Series('', index=out.index)))
+        out['campaign_name'] = self.clean_text(out.get('Campaign Name (Informational only)', pd.Series('', index=out.index)))
+        if 'Ad Group Name (Informational only)' in out.columns:
+            out['ad_group_name'] = self.clean_text(out['Ad Group Name (Informational only)'])
+        else:
+            out['ad_group_name'] = ''
+        out['keyword_text'] = self.clean_text(out.get('Keyword Text', pd.Series('', index=out.index)))
+        out['match_type'] = self.clean_text(out.get('Match Type', pd.Series('', index=out.index)))
+        out['search_term'] = self.clean_text(out.get('Customer Search Term', pd.Series('', index=out.index)))
+        out['bid'] = self.first_present(out, ['Bid'])
+        out['clicks'] = self.first_present(out, ['Clicks'])
+        out['spend'] = self.first_present(out, ['Spend'])
+        out['sales'] = self.first_present(out, ['Sales'])
+        out['orders'] = self.first_present(out, ['Orders'])
+        out['roas'] = self.first_present(out, ['ROAS'])
+        return out
+
+    def _bulk_sheets(self):
+        wb = self.load_bulk_workbook()
+        return wb.get('Sponsored Brands Campaigns'), wb.get('SB Multi Ad Group Campaigns'), wb
+
+    def _build_bid_updates_for_sheet(self, sheet_df, perf_df, id_col, entity_col='Entity'):
+        if sheet_df is None or sheet_df.empty:
+            return pd.DataFrame()
+        if id_col not in sheet_df.columns or 'Bid' not in sheet_df.columns:
+            return pd.DataFrame()
+        sheet = sheet_df.copy()
+        if entity_col in sheet.columns:
+            sheet = sheet[sheet[entity_col].astype(str).str.contains('Keyword|Product Target', case=False, na=False)].copy()
+        if sheet.empty:
+            return pd.DataFrame()
+        sheet['_id_key'] = self.clean_text(sheet[id_col])
+        perf = perf_df.copy()
+        perf['_id_key'] = self.clean_text(perf[id_col.replace(' ID', '_id')]) if id_col.replace(' ID', '_id') in perf.columns else self.clean_text(perf.get(id_col, pd.Series('', index=perf.index)))
+        perf = perf.groupby('_id_key', as_index=False).agg(
+            clicks=('clicks', 'sum'),
+            spend=('spend', 'sum'),
+            sales=('sales', 'sum'),
+            orders=('orders', 'sum'),
+            roas=('roas', 'mean'),
+            campaign_name=('campaign_name', 'first'),
+            ad_group_name=('ad_group_name', 'first'),
+            keyword_text=('keyword_text', 'first'),
+            match_type=('match_type', 'first'),
+        )
+        joined = sheet.merge(perf, on='_id_key', how='left')
+        joined['clicks'] = joined['clicks'].fillna(0)
+        joined['orders'] = joined['orders'].fillna(0)
+        joined['roas'] = joined['roas'].fillna(0)
+        joined['current_bid'] = self.safe_numeric(joined['Bid'])
+        joined['optimizer_action'] = joined.apply(lambda r: self._bid_action(r['roas'], r['clicks'], r['orders']) if self.enable_bid_updates else None, axis=1)
+        joined = joined[joined['optimizer_action'].notna()].copy()
+        if joined.empty:
+            return pd.DataFrame()
+        joined['new_bid'] = joined.apply(lambda r: self._adjust_bid(r['current_bid'], r['optimizer_action']), axis=1)
+        joined = joined[joined['new_bid'] != joined['current_bid']].copy()
+        if joined.empty:
+            return pd.DataFrame()
+        joined['Bid'] = joined['new_bid']
+        joined['Operation'] = 'update'
+        joined['Product'] = 'Sponsored Brands'
+        joined['ad_type'] = 'SB'
+        joined['source_type'] = 'bid'
+        joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
+        joined['ad_group'] = joined.get('Ad Group Name', joined.get('ad_group_name', ''))
+        return joined
+
+    def _build_campaign_budget_updates(self, sheet_df, perf_df, campaign_id_col='Campaign ID', budget_col='Budget'):
+        if sheet_df is None or sheet_df.empty or campaign_id_col not in sheet_df.columns or budget_col not in sheet_df.columns:
+            return pd.DataFrame()
+        campaigns = sheet_df.copy()
+        if 'Entity' in campaigns.columns:
+            campaigns = campaigns[campaigns['Entity'].astype(str).str.contains('Campaign', case=False, na=False)].copy()
+        if campaigns.empty:
+            return pd.DataFrame()
+        campaigns['_campaign_key'] = self.clean_text(campaigns[campaign_id_col])
+        perf = perf_df.groupby('campaign_id', as_index=False).agg(
+            clicks=('clicks', 'sum'),
+            spend=('spend', 'sum'),
+            sales=('sales', 'sum'),
+            orders=('orders', 'sum'),
+            roas=('roas', 'mean'),
+            campaign_name=('campaign_name', 'first'),
+        )
+        perf['_campaign_key'] = self.clean_text(perf['campaign_id'])
+        joined = campaigns.merge(perf, on='_campaign_key', how='left')
+        joined['roas'] = joined['roas'].fillna(0)
+        joined['orders'] = joined['orders'].fillna(0)
+        joined['current_budget'] = self.safe_numeric(joined[budget_col])
+        joined['optimizer_action'] = joined.apply(lambda r: self._budget_action(r['roas'], r['orders']) if self.enable_budget_updates else None, axis=1)
+        joined = joined[joined['optimizer_action'].notna()].copy()
+        if joined.empty:
+            return pd.DataFrame()
+        joined['new_budget'] = joined.apply(lambda r: self._adjust_budget(r['current_budget'], r['optimizer_action']), axis=1)
+        joined = joined[joined['new_budget'] != joined['current_budget']].copy()
+        if joined.empty:
+            return pd.DataFrame()
+        joined[budget_col] = joined['new_budget']
+        joined['Operation'] = 'update'
+        joined['Product'] = 'Sponsored Brands'
+        joined['ad_type'] = 'SB'
+        joined['source_type'] = 'budget'
+        joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
+        joined['ad_group'] = ''
+        return joined
+
+    def process(self):
+        perf = self._load_search_terms()
+        standard_sheet, multi_sheet, wb = self._bulk_sheets()
+        bid_updates = []
+        budget_updates = []
+        if not perf.empty:
+            if standard_sheet is not None and not standard_sheet.empty:
+                std_perf = perf[perf['keyword_id'].ne('') | perf['product_targeting_id'].ne('')].copy()
+                if not std_perf.empty:
+                    if 'keyword_id' in std_perf.columns:
+                        bid_updates.append(self._build_bid_updates_for_sheet(standard_sheet, std_perf[std_perf['keyword_id'].ne('')].copy(), 'Keyword ID'))
+                    if 'product_targeting_id' in std_perf.columns:
+                        bid_updates.append(self._build_bid_updates_for_sheet(standard_sheet, std_perf[std_perf['product_targeting_id'].ne('')].copy(), 'Product Targeting ID'))
+                budget_updates.append(self._build_campaign_budget_updates(standard_sheet, perf))
+            if multi_sheet is not None and not multi_sheet.empty:
+                bid_updates.append(self._build_bid_updates_for_sheet(multi_sheet, perf[perf['keyword_id'].ne('')].copy(), 'Keyword ID'))
+                budget_updates.append(self._build_campaign_budget_updates(multi_sheet, perf))
+        bid_updates_df = pd.concat([df for df in bid_updates if df is not None and not df.empty], ignore_index=True) if bid_updates else pd.DataFrame()
+        budget_updates_df = pd.concat([df for df in budget_updates if df is not None and not df.empty], ignore_index=True) if budget_updates else pd.DataFrame()
+        combined = pd.concat([bid_updates_df, budget_updates_df], ignore_index=True) if (not bid_updates_df.empty or not budget_updates_df.empty) else pd.DataFrame()
+        action_log = pd.DataFrame()
+        if not perf.empty:
+            action_log = perf[['campaign_name', 'ad_group_name', 'search_term', 'clicks', 'spend', 'sales', 'orders', 'roas']].copy()
+            action_log['ad_type'] = 'SB'
+            action_log['source_type'] = 'search_term'
+            action_log['optimizer_action'] = action_log.apply(lambda r: 'REVIEW_SEARCH_TERM' if r['clicks'] >= self.min_clicks else 'OBSERVE', axis=1)
+        summary = {
+            'bid_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BID').sum()) if not combined.empty else 0,
+            'bid_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BID').sum()) if not combined.empty else 0,
+            'budget_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BUDGET').sum()) if not combined.empty else 0,
+            'budget_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BUDGET').sum()) if not combined.empty else 0,
+            'harvested_keywords': 0,
+            'negatives_added': 0,
+        }
+        account_summary = {
+            'total_spend': round(float(perf['spend'].sum()), 2) if not perf.empty else 0.0,
+            'total_sales': round(float(perf['sales'].sum()), 2) if not perf.empty else 0.0,
+        }
+        return {
+            'ad_type': 'SB',
+            'combined_bulk_updates': combined,
+            'bid_recommendations': bid_updates_df,
+            'campaign_budget_actions': budget_updates_df,
+            'search_term_actions': action_log,
+            'simulation_summary': summary,
+            'account_summary': account_summary,
+            'campaign_health_dashboard': pd.DataFrame(),
+            'smart_warnings': [],
+            'optimization_suggestions': [],
+            'pre_run_preview': summary,
+        }
+
+
+class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
+    def __init__(self, bulk_file, targeting_file=None, **kwargs):
+        super().__init__(bulk_file=bulk_file, enable_search_harvesting=False, enable_negative_keywords=False, **kwargs)
+        self.targeting_file = targeting_file
+
+    def _load_targeting(self):
+        df = self.load_file(self.targeting_file) if self.targeting_file is not None else None
+        if df is None or df.empty:
+            wb = self.load_bulk_workbook()
+            if 'Sponsored Display Campaigns' in wb:
+                df = wb['Sponsored Display Campaigns']
+            elif 'RAS Campaigns' in wb:
+                df = wb['RAS Campaigns']
+        if df is None or df.empty:
+            return pd.DataFrame()
+        out = df.copy()
+        out['campaign_id'] = self.clean_text(out.get('Campaign ID', pd.Series('', index=out.index)))
+        out['ad_group_id'] = self.clean_text(out.get('Ad Group ID', pd.Series('', index=out.index)))
+        out['targeting_id'] = self.clean_text(out.get('Targeting ID', out.get('Target ID', pd.Series('', index=out.index))))
+        out['campaign_name'] = self.clean_text(out.get('Campaign Name', out.get('Campaign Name (Informational only)', pd.Series('', index=out.index))))
+        out['ad_group_name'] = self.clean_text(out.get('Ad Group Name', out.get('Ad Group Name (Informational only)', pd.Series('', index=out.index))))
+        out['bid'] = self.first_present(out, ['Bid', 'Ad Group Default Bid'])
+        out['budget'] = self.first_present(out, ['Budget'])
+        out['clicks'] = self.first_present(out, ['Clicks'])
+        out['spend'] = self.first_present(out, ['Spend'])
+        out['sales'] = self.first_present(out, ['Sales'])
+        out['orders'] = self.first_present(out, ['Orders'])
+        out['roas'] = self.first_present(out, ['ROAS'])
+        if 'ROAS' not in out.columns:
+            out['roas'] = np.where(out['spend'] > 0, out['sales'] / out['spend'], 0)
+        out['tactic'] = self.clean_text(out.get('Tactic', out.get('Targeting Type', pd.Series('', index=out.index))))
+        return out
+
+    def process(self):
+        perf = self._load_targeting()
+        if perf.empty:
+            return {
+                'ad_type': 'SD', 'combined_bulk_updates': pd.DataFrame(), 'bid_recommendations': pd.DataFrame(),
+                'campaign_budget_actions': pd.DataFrame(), 'search_term_actions': pd.DataFrame(),
+                'simulation_summary': {'bid_increases':0,'bid_decreases':0,'budget_increases':0,'budget_decreases':0,'harvested_keywords':0,'negatives_added':0},
+                'account_summary': {'total_spend':0.0,'total_sales':0.0}, 'campaign_health_dashboard': pd.DataFrame(),
+                'smart_warnings': [], 'optimization_suggestions': [], 'pre_run_preview': {},
+            }
+        wb = self.load_bulk_workbook()
+        sd_sheet = wb.get('Sponsored Display Campaigns')
+        ras_sheet = wb.get('RAS Campaigns')
+        bid_updates = []
+        budget_updates = []
+        for sheet, id_col, budget_col in [(sd_sheet, 'Targeting ID', 'Budget'), (ras_sheet, 'Target ID', 'Budget')]:
+            if sheet is None or sheet.empty:
+                continue
+            work = sheet.copy()
+            if id_col in work.columns and 'Bid' in work.columns:
+                if 'Entity' in work.columns:
+                    work = work[work['Entity'].astype(str).str.contains('Target', case=False, na=False)].copy()
+                work['_target_key'] = self.clean_text(work[id_col])
+                grouped = perf.groupby('targeting_id', as_index=False).agg(
+                    clicks=('clicks','sum'), spend=('spend','sum'), sales=('sales','sum'), orders=('orders','sum'), roas=('roas','mean'),
+                    campaign_name=('campaign_name','first'), ad_group_name=('ad_group_name','first'), tactic=('tactic','first')
+                )
+                grouped['_target_key'] = self.clean_text(grouped['targeting_id'])
+                joined = work.merge(grouped, on='_target_key', how='left')
+                joined['clicks'] = joined['clicks'].fillna(0)
+                joined['orders'] = joined['orders'].fillna(0)
+                joined['roas'] = joined['roas'].fillna(0)
+                joined['current_bid'] = self.safe_numeric(joined['Bid'])
+                joined['optimizer_action'] = joined.apply(lambda r: self._bid_action(r['roas'], r['clicks'], r['orders']) if self.enable_bid_updates else None, axis=1)
+                joined = joined[joined['optimizer_action'].notna()].copy()
+                if not joined.empty:
+                    joined['new_bid'] = joined.apply(lambda r: self._adjust_bid(r['current_bid'], r['optimizer_action']), axis=1)
+                    joined = joined[joined['new_bid'] != joined['current_bid']].copy()
+                    if not joined.empty:
+                        joined['Bid'] = joined['new_bid']
+                        joined['Operation'] = 'update'
+                        joined['Product'] = 'Sponsored Display'
+                        joined['ad_type'] = 'SD'
+                        joined['source_type'] = 'bid'
+                        joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
+                        joined['ad_group'] = joined.get('Ad Group Name', joined.get('ad_group_name', ''))
+                        bid_updates.append(joined)
+            if budget_col in work.columns and 'Campaign ID' in work.columns:
+                campaigns = work.copy()
+                if 'Entity' in campaigns.columns:
+                    campaigns = campaigns[campaigns['Entity'].astype(str).str.contains('Campaign', case=False, na=False)].copy()
+                if not campaigns.empty:
+                    campaigns['_campaign_key'] = self.clean_text(campaigns['Campaign ID'])
+                    grouped = perf.groupby('campaign_id', as_index=False).agg(
+                        clicks=('clicks','sum'), spend=('spend','sum'), sales=('sales','sum'), orders=('orders','sum'), roas=('roas','mean'), campaign_name=('campaign_name','first')
+                    )
+                    grouped['_campaign_key'] = self.clean_text(grouped['campaign_id'])
+                    joined = campaigns.merge(grouped, on='_campaign_key', how='left')
+                    joined['roas'] = joined['roas'].fillna(0)
+                    joined['orders'] = joined['orders'].fillna(0)
+                    joined['current_budget'] = self.safe_numeric(joined[budget_col])
+                    joined['optimizer_action'] = joined.apply(lambda r: self._budget_action(r['roas'], r['orders']) if self.enable_budget_updates else None, axis=1)
+                    joined = joined[joined['optimizer_action'].notna()].copy()
+                    if not joined.empty:
+                        joined['new_budget'] = joined.apply(lambda r: self._adjust_budget(r['current_budget'], r['optimizer_action']), axis=1)
+                        joined = joined[joined['new_budget'] != joined['current_budget']].copy()
+                        if not joined.empty:
+                            joined[budget_col] = joined['new_budget']
+                            joined['Operation'] = 'update'
+                            joined['Product'] = 'Sponsored Display'
+                            joined['ad_type'] = 'SD'
+                            joined['source_type'] = 'budget'
+                            joined['campaign'] = joined.get('Campaign Name', joined.get('campaign_name', ''))
+                            joined['ad_group'] = ''
+                            budget_updates.append(joined)
+        bid_updates_df = pd.concat(bid_updates, ignore_index=True) if bid_updates else pd.DataFrame()
+        budget_updates_df = pd.concat(budget_updates, ignore_index=True) if budget_updates else pd.DataFrame()
+        combined = pd.concat([bid_updates_df, budget_updates_df], ignore_index=True) if (not bid_updates_df.empty or not budget_updates_df.empty) else pd.DataFrame()
+        summary = {
+            'bid_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BID').sum()) if not combined.empty else 0,
+            'bid_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BID').sum()) if not combined.empty else 0,
+            'budget_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BUDGET').sum()) if not combined.empty else 0,
+            'budget_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BUDGET').sum()) if not combined.empty else 0,
+            'harvested_keywords': 0,
+            'negatives_added': 0,
+        }
+        account_summary = {
+            'total_spend': round(float(perf['spend'].sum()), 2),
+            'total_sales': round(float(perf['sales'].sum()), 2),
+        }
+        return {
+            'ad_type': 'SD',
+            'combined_bulk_updates': combined,
+            'bid_recommendations': bid_updates_df,
+            'campaign_budget_actions': budget_updates_df,
+            'search_term_actions': pd.DataFrame(),
+            'simulation_summary': summary,
+            'account_summary': account_summary,
+            'campaign_health_dashboard': pd.DataFrame(),
+            'smart_warnings': [],
+            'optimization_suggestions': [],
+            'pre_run_preview': summary,
+        }
+
+
+class Phase2AdsOrchestrator:
+    def __init__(
+        self,
+        bulk_file,
+        business_report_file=None,
+        sqp_report_file=None,
+        sp_search_term_file=None,
+        sp_targeting_file=None,
+        sp_impression_share_file=None,
+        sb_search_term_file=None,
+        sb_impression_share_file=None,
+        sd_targeting_file=None,
+        min_roas=3.0,
+        min_clicks=8,
+        zero_order_click_threshold=12,
+        zero_order_action='Both',
+        strategy_mode='Balanced',
+        enable_bid_updates=True,
+        enable_search_harvesting=True,
+        enable_negative_keywords=True,
+        enable_budget_updates=True,
+        enable_tacos_control=False,
+        max_tacos_target=15.0,
+        enable_monthly_budget_control=False,
+        monthly_account_budget=0.0,
+        month_to_date_spend=0.0,
+        pacing_buffer_pct=5.0,
+        max_bid_cap=5.0,
+        max_budget_cap=500.0,
+    ):
+        self.kwargs = locals().copy()
+        self.kwargs.pop('self')
+
+    def _sp_engine(self):
+        return AdsOptimizerEngine(
+            bulk_file=self.kwargs['bulk_file'],
+            search_term_file=self.kwargs['sp_search_term_file'],
+            targeting_file=self.kwargs['sp_targeting_file'],
+            impression_share_file=self.kwargs['sp_impression_share_file'],
+            business_report_file=self.kwargs['business_report_file'],
+            sqp_report_file=self.kwargs['sqp_report_file'],
+            min_roas=self.kwargs['min_roas'],
+            min_clicks=self.kwargs['min_clicks'],
+            zero_order_click_threshold=self.kwargs['zero_order_click_threshold'],
+            zero_order_action=self.kwargs['zero_order_action'],
+            strategy_mode=self.kwargs['strategy_mode'],
+            enable_bid_updates=self.kwargs['enable_bid_updates'],
+            enable_search_harvesting=self.kwargs['enable_search_harvesting'],
+            enable_negative_keywords=self.kwargs['enable_negative_keywords'],
+            enable_budget_updates=self.kwargs['enable_budget_updates'],
+            enable_tacos_control=self.kwargs['enable_tacos_control'],
+            max_tacos_target=self.kwargs['max_tacos_target'],
+            enable_monthly_budget_control=self.kwargs['enable_monthly_budget_control'],
+            monthly_account_budget=self.kwargs['monthly_account_budget'],
+            month_to_date_spend=self.kwargs['month_to_date_spend'],
+            pacing_buffer_pct=self.kwargs['pacing_buffer_pct'],
+            max_bid_cap=self.kwargs['max_bid_cap'],
+            max_budget_cap=self.kwargs['max_budget_cap'],
+        )
+
+    def _sb_engine(self):
+        return SponsoredBrandsOptimizer(
+            bulk_file=self.kwargs['bulk_file'],
+            search_term_file=self.kwargs['sb_search_term_file'],
+            impression_share_file=self.kwargs['sb_impression_share_file'],
+            min_roas=self.kwargs['min_roas'],
+            min_clicks=self.kwargs['min_clicks'],
+            zero_order_click_threshold=self.kwargs['zero_order_click_threshold'],
+            zero_order_action=self.kwargs['zero_order_action'],
+            strategy_mode=self.kwargs['strategy_mode'],
+            enable_bid_updates=self.kwargs['enable_bid_updates'],
+            enable_search_harvesting=self.kwargs['enable_search_harvesting'],
+            enable_negative_keywords=self.kwargs['enable_negative_keywords'],
+            enable_budget_updates=self.kwargs['enable_budget_updates'],
+            max_bid_cap=self.kwargs['max_bid_cap'],
+            max_budget_cap=self.kwargs['max_budget_cap'],
+        )
+
+    def _sd_engine(self):
+        return SponsoredDisplayOptimizer(
+            bulk_file=self.kwargs['bulk_file'],
+            targeting_file=self.kwargs['sd_targeting_file'],
+            min_roas=self.kwargs['min_roas'],
+            min_clicks=self.kwargs['min_clicks'],
+            zero_order_click_threshold=self.kwargs['zero_order_click_threshold'],
+            zero_order_action=self.kwargs['zero_order_action'],
+            strategy_mode=self.kwargs['strategy_mode'],
+            enable_bid_updates=self.kwargs['enable_bid_updates'],
+            enable_budget_updates=self.kwargs['enable_budget_updates'],
+            max_bid_cap=self.kwargs['max_bid_cap'],
+            max_budget_cap=self.kwargs['max_budget_cap'],
+        )
+
+    def process(self):
+        validator = Phase2UploadValidator(
+            bulk_file=self.kwargs['bulk_file'],
+            business_report_file=self.kwargs['business_report_file'],
+            sqp_report_file=self.kwargs['sqp_report_file'],
+            sp_search_term_file=self.kwargs['sp_search_term_file'],
+            sp_targeting_file=self.kwargs['sp_targeting_file'],
+            sp_impression_share_file=self.kwargs['sp_impression_share_file'],
+            sb_search_term_file=self.kwargs['sb_search_term_file'],
+            sb_impression_share_file=self.kwargs['sb_impression_share_file'],
+            sd_targeting_file=self.kwargs['sd_targeting_file'],
+        )
+        validation = validator.analyze()
+        runnable = validation.get('runnable_types', [])
+        per_type = {}
+        execution_summary_rows = []
+        all_bulk_updates = []
+        all_bid_updates = []
+        all_search_actions = []
+        all_budget_actions = []
+        all_warnings = []
+        all_suggestions = []
+        sqp_opportunities = pd.DataFrame()
+        sqp_summary = {}
+        sp_account_health = {}
+        sp_campaign_dashboard = pd.DataFrame()
+        run_history = pd.DataFrame()
+        total_preview = {'bid_increases':0,'bid_decreases':0,'budget_increases':0,'budget_decreases':0,'harvested_keywords':0,'negatives_added':0}
+        total_summary = {'bid_increases':0,'bid_decreases':0,'budget_increases':0,'budget_decreases':0,'harvested_keywords':0,'negatives_added':0}
+        combined_account_summary = {'total_spend':0.0,'total_sales':0.0,'campaigns_under_target':0,'campaigns_scalable':0,'campaigns_waste_alert':0}
+
+        if 'SP' in runnable:
+            sp_out = self._sp_engine().process()
+            per_type['SP'] = sp_out
+            execution_summary_rows.append({'ad_type':'SP','optimized':True,'status':'Optimized','actions':len(sp_out.get('combined_bulk_updates', pd.DataFrame())), 'spend':sp_out.get('account_summary',{}).get('total_spend',0.0)})
+            for key, target in [('combined_bulk_updates', all_bulk_updates), ('bid_recommendations', all_bid_updates), ('search_term_actions', all_search_actions), ('campaign_budget_actions', all_budget_actions)]:
+                df = sp_out.get(key)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    if 'ad_type' not in df.columns:
+                        df = df.copy(); df['ad_type'] = 'SP'
+                    target.append(df)
+            all_warnings.extend(sp_out.get('smart_warnings', []))
+            all_suggestions.extend(sp_out.get('optimization_suggestions', []))
+            sqp_opportunities = sp_out.get('sqp_opportunities', pd.DataFrame())
+            sqp_summary = sp_out.get('sqp_summary', {})
+            sp_account_health = sp_out.get('account_health', {})
+            sp_campaign_dashboard = sp_out.get('campaign_health_dashboard', pd.DataFrame())
+            run_history = sp_out.get('run_history', pd.DataFrame())
+            for k in total_preview:
+                total_preview[k] += int(sp_out.get('pre_run_preview', {}).get(k, 0) or 0)
+                total_summary[k] += int(sp_out.get('simulation_summary', {}).get(k, 0) or 0)
+            for k,v in sp_out.get('account_summary', {}).items():
+                if isinstance(v, (int,float,np.integer,np.floating)):
+                    combined_account_summary[k] = combined_account_summary.get(k,0)+v
+        else:
+            execution_summary_rows.append({'ad_type':'SP','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sp_spend',0.0)})
+
+        if 'SB' in runnable:
+            sb_out = self._sb_engine().process()
+            per_type['SB'] = sb_out
+            execution_summary_rows.append({'ad_type':'SB','optimized':True,'status':'Optimized','actions':len(sb_out.get('combined_bulk_updates', pd.DataFrame())), 'spend':sb_out.get('account_summary',{}).get('total_spend',0.0)})
+            for key, target in [('combined_bulk_updates', all_bulk_updates), ('bid_recommendations', all_bid_updates), ('search_term_actions', all_search_actions), ('campaign_budget_actions', all_budget_actions)]:
+                df = sb_out.get(key)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    if 'ad_type' not in df.columns:
+                        df = df.copy(); df['ad_type'] = 'SB'
+                    target.append(df)
+            for k in total_preview:
+                total_preview[k] += int(sb_out.get('pre_run_preview', {}).get(k, 0) or 0)
+                total_summary[k] += int(sb_out.get('simulation_summary', {}).get(k, 0) or 0)
+            for k,v in sb_out.get('account_summary', {}).items():
+                if isinstance(v, (int,float,np.integer,np.floating)):
+                    combined_account_summary[k] = combined_account_summary.get(k,0)+v
+            all_suggestions.append('Sponsored Brands starter optimizer used bid and budget logic from search term performance.')
+        else:
+            execution_summary_rows.append({'ad_type':'SB','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sb_spend',0.0)})
+
+        if 'SD' in runnable:
+            sd_out = self._sd_engine().process()
+            per_type['SD'] = sd_out
+            execution_summary_rows.append({'ad_type':'SD','optimized':True,'status':'Optimized','actions':len(sd_out.get('combined_bulk_updates', pd.DataFrame())), 'spend':sd_out.get('account_summary',{}).get('total_spend',0.0)})
+            for key, target in [('combined_bulk_updates', all_bulk_updates), ('bid_recommendations', all_bid_updates), ('search_term_actions', all_search_actions), ('campaign_budget_actions', all_budget_actions)]:
+                df = sd_out.get(key)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    if 'ad_type' not in df.columns:
+                        df = df.copy(); df['ad_type'] = 'SD'
+                    target.append(df)
+            for k in total_preview:
+                total_preview[k] += int(sd_out.get('pre_run_preview', {}).get(k, 0) or 0)
+                total_summary[k] += int(sd_out.get('simulation_summary', {}).get(k, 0) or 0)
+            for k,v in sd_out.get('account_summary', {}).items():
+                if isinstance(v, (int,float,np.integer,np.floating)):
+                    combined_account_summary[k] = combined_account_summary.get(k,0)+v
+            all_suggestions.append('Sponsored Display starter optimizer used target-level and campaign budget logic.')
+        else:
+            execution_summary_rows.append({'ad_type':'SD','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sd_spend',0.0)})
+
+        execution_summary = pd.DataFrame(execution_summary_rows)
+        combined_bulk_updates = pd.concat(all_bulk_updates, ignore_index=True) if all_bulk_updates else pd.DataFrame()
+        bid_recommendations = pd.concat(all_bid_updates, ignore_index=True) if all_bid_updates else pd.DataFrame()
+        search_term_actions = pd.concat(all_search_actions, ignore_index=True) if all_search_actions else pd.DataFrame()
+        campaign_budget_actions = pd.concat(all_budget_actions, ignore_index=True) if all_budget_actions else pd.DataFrame()
+        spend_summary = validation.get('spend_summary', {})
+        combined_account_summary['sp_total_spend'] = spend_summary.get('sp_spend', 0.0)
+        combined_account_summary['sb_total_spend'] = spend_summary.get('sb_spend', 0.0)
+        combined_account_summary['sd_total_spend'] = spend_summary.get('sd_spend', 0.0)
+        combined_account_summary['total_spend'] = spend_summary.get('total_spend', combined_account_summary.get('total_spend', 0.0))
+        combined_account_summary['sp_total_sales'] = spend_summary.get('sp_sales', 0.0)
+        combined_account_summary['sb_total_sales'] = spend_summary.get('sb_sales', 0.0)
+        combined_account_summary['sd_total_sales'] = spend_summary.get('sd_sales', 0.0)
+        combined_account_summary['total_sales'] = spend_summary.get('total_sales', combined_account_summary.get('total_sales', 0.0))
+        if not runnable:
+            all_warnings.append('No ad types were ready to optimize. Use the readiness table to fill the missing uploads.')
+        return {
+            'combined_bulk_updates': combined_bulk_updates,
+            'bid_recommendations': bid_recommendations,
+            'search_term_actions': search_term_actions,
+            'campaign_budget_actions': campaign_budget_actions,
+            'account_health': sp_account_health,
+            'simulation_summary': total_summary,
+            'campaign_health_dashboard': sp_campaign_dashboard,
+            'smart_warnings': all_warnings,
+            'optimization_suggestions': all_suggestions,
+            'pre_run_preview': total_preview,
+            'account_summary': combined_account_summary,
+            'run_history': run_history,
+            'sqp_opportunities': sqp_opportunities,
+            'sqp_summary': sqp_summary,
+            'execution_summary': execution_summary,
+            'validation': validation,
+            'per_type_outputs': per_type,
+            'runnable_types': runnable,
+        }
