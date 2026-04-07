@@ -1669,6 +1669,7 @@ if "last_outputs" in st.session_state:
     execution_summary = safe_df(outputs.get("execution_summary"))
     per_type_outputs = safe_dict(outputs.get("per_type_outputs"))
     output_runnable_types = safe_list(outputs.get("runnable_types"))
+    optimizer_diagnostics = safe_df(outputs.get("optimizer_diagnostics"))
 
     ai_candidates_df = pd.DataFrame()
     ai_override_log_df = pd.DataFrame()
@@ -1747,6 +1748,10 @@ if "last_outputs" in st.session_state:
         st.dataframe(execution_summary, use_container_width=True)
     else:
         st.info('No execution summary available for this run.')
+    
+    if not optimizer_diagnostics.empty:
+        st.markdown('<div class="section-note">These diagnostics show why SB / SD may have produced few or no actions.</div>', unsafe_allow_html=True)
+        st.dataframe(optimizer_diagnostics, use_container_width=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1963,16 +1968,6 @@ if "last_outputs" in st.session_state:
             file_name="campaign_budget_actions.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_campaign_budget_actions_xlsx",
-            use_container_width=True,
-        )
-
-    if not execution_summary.empty:
-        st.download_button(
-            label="Download Execution Summary",
-            data=to_excel_bytes(execution_summary),
-            file_name="execution_summary.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_execution_summary_xlsx",
             use_container_width=True,
         )
 
