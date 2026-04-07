@@ -1,3 +1,265 @@
+
+import io
+import os
+import calendar
+from datetime import date
+
+import numpy as np
+import pandas as pd
+
+
+class Phase1UploadValidator:
+    """Phase 1 upload validation and spend reconciliation.
+
+    This class is intentionally additive. It does not change the existing
+    Sponsored Products optimizer logic. It only validates shared / SP / SB / SD
+    upload readiness and builds a spend reconciliation view before optimization.
+    """
+
+    SP_BULK_SHEETS = ["Sponsored Products Campaigns", "SP Search Term Report"]
+    SB_BULK_SHEETS = ["Sponsored Brands Campaigns", "SB Multi Ad Group Campaigns", "SB Search Term Report"]
+    SD_BULK_SHEETS = ["Sponsored Display Campaigns", "RAS Campaigns", "RAS Search Term Report"]
+
+    def __init__(
+        self,
+        bulk_file=None,
+        business_report_file=None,
+        sqp_report_file=None,
+        sp_search_term_file=None,
+        sp_targeting_file=None,
+        sp_impression_share_file=None,
+        sb_search_term_file=None,
+        sb_impression_share_file=None,
+        sd_targeting_file=None,
+    ):
+        self.bulk_file = bulk_file
+        self.business_report_file = business_report_file
+        self.sqp_report_file = sqp_report_file
+        self.sp_search_term_file = sp_search_term_file
+        self.sp_targeting_file = sp_targeting_file
+        self.sp_impression_share_file = sp_impression_share_file
+        self.sb_search_term_file = sb_search_term_file
+        self.sb_impression_share_file = sb_impression_share_file
+        self.sd_targeting_file = sd_targeting_file
+
+    def _clone_file_obj(self, file_obj):
+        if file_obj is None:
+            return None
+        if isinstance(file_obj, (str, bytes, os.PathLike)):
+            return file_obj
+        if isinstance(file_obj, io.BytesIO):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'getvalue'):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'read'):
+            try:
+                pos = file_obj.tell()
+            except Exception:
+                pos = None
+            try:
+                if hasattr(file_obj, 'seek'):
+                    file_obj.seek(0)
+                data = file_obj.read()
+            finally:
+                try:
+                    if pos is not None and hasattr(file_obj, 'seek'):
+                        file_obj.seek(pos)
+                except Exception:
+                    pass
+            return io.BytesIO(data)
+        raise ValueError('Unsupported file object type.')
+
+    def _get_file_extension(self, file_obj, fallback=None):
+        if file_obj is None:
+            return None
+        if isinstance(file_obj, (str, os.PathLike)):
+            return os.path.splitext(str(file_obj))[1].lower()
+        name = getattr(file_obj, 'name', None)
+        if isinstance(name, str) and name.strip():
+            return os.path.splitext(name)[1].lower()
+        return fallback
+
+    def _load_any(self, file_obj, expected_ext=None, **kwargs):
+        if file_obj is None:
+            return None
+        ext = self._get_file_extension(file_obj, fallback=expected_ext)
+        cloned = self._clone_file_obj(file_obj)
+        if ext == '.csv':
+            return pd.read_csv(cloned, **kwargs)
+        if ext in ['.xlsx', '.xls']:
+            return pd.read_excel(cloned, engine='openpyxl', **kwargs)
+        raise ValueError(f'Unsupported file type: {ext}')
+
+    def _read_bulk_workbook(self):
+        if self.bulk_file is None:
+            return {}
+        cloned = self._clone_file_obj(self.bulk_file)
+        return pd.read_excel(cloned, sheet_name=None, engine='openpyxl', dtype=str)
+
+    def _clean_text(self, value):
+        return str(value or '').strip()
+
+    def _safe_numeric_series(self, series):
+        cleaned = (
+            series.fillna('')
+            .astype(str)
+            .str.replace(',', '', regex=False)
+            .str.replace('$', '', regex=False)
+            .str.replace('%', '', regex=False)
+            .str.replace(r'\(([^\)]+)\)', r'-\1', regex=True)
+            .str.strip()
+        )
+        return pd.to_numeric(cleaned, errors='coerce').fillna(0)
+
+    def _sum_spend_from_df(self, df):
+        if df is None or getattr(df, 'empty', True):
+            return 0.0
+        for col in ['Spend', 'Cost', ' spend', 'Amount Spent']:
+            if col in df.columns:
+                return round(float(self._safe_numeric_series(df[col]).sum()), 2)
+        return 0.0
+
+    def _sum_sales_from_df(self, df):
+        if df is None or getattr(df, 'empty', True):
+            return 0.0
+        for col in ['7 Day Total Sales ', 'Sales', '14 Day Total Sales ', 'Attributed Sales', 'Total Sales']:
+            if col in df.columns:
+                return round(float(self._safe_numeric_series(df[col]).sum()), 2)
+        return 0.0
+
+    def _sheet_present(self, workbook, sheet_names):
+        return any(name in workbook for name in sheet_names)
+
+    def _status_for(self, ready, missing_required):
+        if ready:
+            return 'Ready'
+        if missing_required:
+            return 'Partial'
+        return 'Missing'
+
+    def analyze(self):
+        workbook = self._read_bulk_workbook()
+        bulk_sheet_names = list(workbook.keys())
+
+        ad_types_in_bulk = {
+            'SP': self._sheet_present(workbook, self.SP_BULK_SHEETS),
+            'SB': self._sheet_present(workbook, self.SB_BULK_SHEETS),
+            'SD': self._sheet_present(workbook, self.SD_BULK_SHEETS),
+        }
+
+        sp_missing = []
+        if not self.bulk_file:
+            sp_missing.append('Bulk Sheet')
+        if self.sp_search_term_file is None:
+            sp_missing.append('SP Search Term Report')
+        if self.sp_targeting_file is None:
+            sp_missing.append('SP Targeting Report')
+        if self.sp_impression_share_file is None:
+            sp_missing.append('SP Impression Share Report')
+
+        sb_missing = []
+        if not self.bulk_file:
+            sb_missing.append('Bulk Sheet')
+        if self.sb_search_term_file is None:
+            sb_missing.append('SB Search Term Report')
+
+        sd_missing = []
+        if not self.bulk_file:
+            sd_missing.append('Bulk Sheet')
+        if self.sd_targeting_file is None:
+            sd_missing.append('SD Targeting Report')
+
+        sp_ready = len(sp_missing) == 0
+        sb_ready = len(sb_missing) == 0
+        sd_ready = len(sd_missing) == 0
+
+        sp_targeting_df = self._load_any(self.sp_targeting_file, expected_ext='.xlsx') if self.sp_targeting_file is not None else None
+        sp_search_df = self._load_any(self.sp_search_term_file, expected_ext='.xlsx') if self.sp_search_term_file is not None else None
+        sb_search_df = self._load_any(self.sb_search_term_file, expected_ext='.xlsx') if self.sb_search_term_file is not None else None
+        sd_targeting_df = self._load_any(self.sd_targeting_file, expected_ext='.xlsx') if self.sd_targeting_file is not None else None
+
+        sp_spend = self._sum_spend_from_df(sp_targeting_df)
+        if sp_spend == 0 and sp_search_df is not None:
+            sp_spend = self._sum_spend_from_df(sp_search_df)
+        if sp_spend == 0 and 'SP Search Term Report' in workbook:
+            sp_spend = self._sum_spend_from_df(workbook['SP Search Term Report'])
+
+        sb_spend = self._sum_spend_from_df(sb_search_df)
+        if sb_spend == 0 and 'SB Search Term Report' in workbook:
+            sb_spend = self._sum_spend_from_df(workbook['SB Search Term Report'])
+
+        sd_spend = self._sum_spend_from_df(sd_targeting_df)
+        if sd_spend == 0 and 'RAS Search Term Report' in workbook:
+            sd_spend = self._sum_spend_from_df(workbook['RAS Search Term Report'])
+
+        sp_sales = self._sum_sales_from_df(sp_targeting_df)
+        if sp_sales == 0 and sp_search_df is not None:
+            sp_sales = self._sum_sales_from_df(sp_search_df)
+        if sp_sales == 0 and 'SP Search Term Report' in workbook:
+            sp_sales = self._sum_sales_from_df(workbook['SP Search Term Report'])
+
+        sb_sales = self._sum_sales_from_df(sb_search_df)
+        if sb_sales == 0 and 'SB Search Term Report' in workbook:
+            sb_sales = self._sum_sales_from_df(workbook['SB Search Term Report'])
+
+        sd_sales = self._sum_sales_from_df(sd_targeting_df)
+        if sd_sales == 0 and 'RAS Search Term Report' in workbook:
+            sd_sales = self._sum_sales_from_df(workbook['RAS Search Term Report'])
+
+        readiness = {
+            'SP': {
+                'ready': sp_ready,
+                'status': self._status_for(sp_ready, sp_missing),
+                'missing_required': sp_missing,
+                'supported_in_bulk': ad_types_in_bulk['SP'],
+                'provided_reports': {
+                    'bulk': self.bulk_file is not None,
+                    'search_term': self.sp_search_term_file is not None,
+                    'targeting': self.sp_targeting_file is not None,
+                    'impression_share': self.sp_impression_share_file is not None,
+                },
+            },
+            'SB': {
+                'ready': sb_ready,
+                'status': self._status_for(sb_ready, sb_missing),
+                'missing_required': sb_missing,
+                'supported_in_bulk': ad_types_in_bulk['SB'],
+                'provided_reports': {
+                    'bulk': self.bulk_file is not None,
+                    'search_term': self.sb_search_term_file is not None,
+                    'impression_share': self.sb_impression_share_file is not None,
+                },
+            },
+            'SD': {
+                'ready': sd_ready,
+                'status': self._status_for(sd_ready, sd_missing),
+                'missing_required': sd_missing,
+                'supported_in_bulk': ad_types_in_bulk['SD'],
+                'provided_reports': {
+                    'bulk': self.bulk_file is not None,
+                    'targeting': self.sd_targeting_file is not None,
+                },
+            },
+        }
+
+        return {
+            'bulk_sheet_names': bulk_sheet_names,
+            'ad_types_in_bulk': ad_types_in_bulk,
+            'readiness': readiness,
+            'runnable_types': [k for k, v in readiness.items() if v['ready']],
+            'spend_summary': {
+                'sp_spend': round(sp_spend, 2),
+                'sb_spend': round(sb_spend, 2),
+                'sd_spend': round(sd_spend, 2),
+                'total_spend': round(sp_spend + sb_spend + sd_spend, 2),
+                'sp_sales': round(sp_sales, 2),
+                'sb_sales': round(sb_sales, 2),
+                'sd_sales': round(sd_sales, 2),
+                'total_sales': round(sp_sales + sb_sales + sd_sales, 2),
+            },
+        }
+
+
 import io
 import os
 import calendar
