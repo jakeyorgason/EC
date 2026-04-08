@@ -22,9 +22,17 @@ st.set_page_config(
 # Helpers
 # =========================================================
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    export_df = df.copy()
+
+    # Kill duplicate headers before export
+    export_df.columns = [str(c).strip() for c in export_df.columns]
+    export_df = export_df.loc[
+        :, ~pd.Index(export_df.columns).duplicated(keep="first")
+    ].copy()
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Output")
+        export_df.to_excel(writer, index=False, sheet_name="Output")
     return output.getvalue()
 
 
@@ -1654,6 +1662,12 @@ if "last_outputs" in st.session_state:
     outputs = safe_dict(st.session_state["last_outputs"])
 
     combined_bulk_updates = safe_df(outputs.get("combined_bulk_updates"))
+
+    if not combined_bulk_updates.empty:
+        combined_bulk_updates.columns = [str(c).strip() for c in combined_bulk_updates.columns]
+        combined_bulk_updates = combined_bulk_updates.loc[
+            :, ~pd.Index(combined_bulk_updates.columns).duplicated(keep="first")
+        ].copy()
     bid_recommendations = safe_df(outputs.get("bid_recommendations"))
     search_term_actions = safe_df(outputs.get("search_term_actions"))
     campaign_budget_actions = safe_df(outputs.get("campaign_budget_actions"))
