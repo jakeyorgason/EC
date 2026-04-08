@@ -79,6 +79,10 @@ def apply_cross_type_bulk_safeguards(df):
 
     out = df.copy()
 
+    # HARD FIX: remove duplicate headers immediately
+    out.columns = [str(c).strip() for c in out.columns]
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep='first')].copy()
+
     # NEW: kill duplicate headers immediately
     out = out.loc[:, ~out.columns.duplicated()].copy()
     out.columns = [str(c).strip() for c in out.columns]
@@ -126,6 +130,10 @@ def apply_cross_type_bulk_safeguards(df):
     out = out.loc[:, ~out.columns.duplicated()].copy()
     out.columns = [str(c).strip() for c in out.columns]
 
+    # HARD FIX: remove duplicate headers again before returning
+    out.columns = [str(c).strip() for c in out.columns]
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep='first')].copy()
+    
     return out.reset_index(drop=True)
 
 
@@ -1964,6 +1972,10 @@ class AdsOptimizerEngine:
     # -----------------------------
     def apply_final_safeguards(self, combined_bulk_updates):
         df = combined_bulk_updates.copy()
+
+        # HARD FIX: remove duplicate headers immediately
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep='first')].copy()
     
         # NEW: remove duplicate headers immediately
         df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -2029,6 +2041,10 @@ class AdsOptimizerEngine:
         df = df.loc[:, ~df.columns.duplicated()].copy()
         df.columns = [str(c).strip() for c in df.columns]
     
+        # HARD FIX: remove duplicate headers again before returning
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep='first')].copy()
+        
         return df.reset_index(drop=True)
 
     # -----------------------------
@@ -3702,6 +3718,21 @@ class Phase2AdsOrchestrator:
         bid_recommendations = safe_concat_frames(all_bid_updates, ignore_index=True)
         search_term_actions = safe_concat_frames(all_search_actions, ignore_index=True)
         campaign_budget_actions = safe_concat_frames(all_budget_actions, ignore_index=True)
+        
+        # HARD FIX: dedupe headers on every exported dataframe
+        for _df_name in [
+            'execution_summary',
+            'optimizer_diagnostics',
+            'combined_bulk_updates',
+            'bid_recommendations',
+            'search_term_actions',
+            'campaign_budget_actions',
+        ]:
+            _df = locals().get(_df_name)
+            if isinstance(_df, pd.DataFrame) and not _df.empty:
+                _df.columns = [str(c).strip() for c in _df.columns]
+                _df = _df.loc[:, ~pd.Index(_df.columns).duplicated(keep='first')].copy()
+                locals()[_df_name] = _df
         
         # NEW: remove duplicate headers from every exported dataframe
         if isinstance(execution_summary, pd.DataFrame) and not execution_summary.empty:
