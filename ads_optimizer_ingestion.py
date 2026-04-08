@@ -2289,11 +2289,56 @@ class _Phase2BaseOptimizer:
         return round(budget, 2)
 
 
+
 class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
     def __init__(self, bulk_file, search_term_file=None, impression_share_file=None, **kwargs):
         super().__init__(bulk_file=bulk_file, **kwargs)
         self.search_term_file = search_term_file
         self.impression_share_file = impression_share_file
+
+    def _normalize_term(self, value):
+        return " ".join(str(value or "").strip().lower().split())
+
+    def _clean_scalar(self, value):
+        if pd.isna(value):
+            return ""
+        return str(value).strip().replace(".0", "")
+
+    def _key_by_id(self, campaign_id, ad_group_id, term, match_type):
+        return "||".join([
+            self._clean_scalar(campaign_id),
+            self._clean_scalar(ad_group_id),
+            self._normalize_term(term),
+            self._normalize_term(match_type),
+        ])
+
+    def _key_by_name(self, campaign_name, ad_group_name, term, match_type):
+        return "||".join([
+            self._normalize_term(campaign_name),
+            self._normalize_term(ad_group_name),
+            self._normalize_term(term),
+            self._normalize_term(match_type),
+        ])
+
+    def _ad_group_key(self, campaign_id, ad_group_id, campaign_name, ad_group_name):
+        id_key = "||".join([self._clean_scalar(campaign_id), self._clean_scalar(ad_group_id)])
+        name_key = "||".join([self._normalize_term(campaign_name), self._normalize_term(ad_group_name)])
+        return id_key, name_key
+
+    def _is_valid_harvest_term(self, value):
+        term = self._normalize_term(value)
+        if term == "":
+            return False
+        if len(term) < 3:
+            return False
+        if len(term) > 80:
+            return False
+        if len(term.split()) < 2:
+            return False
+        bad_chars = set(['[', ']', '{', '}', '|', ';'])
+        if any(ch in term for ch in bad_chars):
+            return False
+        return True
 
     def _load_search_terms(self):
         df = self.load_file(self.search_term_file) if self.search_term_file is not None else None
@@ -2337,6 +2382,7 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         out['sales'] = self.first_present(out, ['Sales', 'Attributed Sales 14 Day', 'Attributed Sales'])
         out['orders'] = self.first_present(out, ['Orders', 'Purchases', 'Attributed Conversions 14 Day'])
         out['roas'] = self.first_present(out, ['ROAS', 'Return on Ad Spend'])
+        out['cpc'] = self.first_present(out, ['CPC', 'Cost Per Click'])
 
         if 'ROAS' not in out.columns and 'Return on Ad Spend' not in out.columns:
             out['roas'] = np.where(out['spend'] > 0, out['sales'] / out['spend'], 0)
@@ -2351,6 +2397,143 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
     def _bulk_sheets(self):
         wb = self.load_bulk_workbook()
         return wb.get('Sponsored Brands Campaigns'), wb.get('SB Multi Ad Group Campaigns'), wb
+
+    def _build_existing_state(self, *sheet_candidates):
+        existing_exact_by_id = set()
+        existing_exact_by_name = set()
+        existing_negative_by_id = set()
+        existing_negative_by_name = set()
+        keyword_capable_ad_groups = set()
+
+        for sheet_df in sheet_candidates:
+            if sheet_df is None or sheet_df.empty or 'Entity' not in sheet_df.columns:
+                continue
+
+            work = sheet_df.copy()
+            campaign_names = self.clean_text(
+                work.get('Campaign Name', work.get('Campaign Name (Informational only)', pd.Series('', index=work.index)))
+            )
+            ad_group_names = self.clean_text(
+                work.get('Ad Group Name', work.get('Ad Group Name (Informational only)', pd.Series('', index=work.index)))
+            )
+            campaign_ids = self.clean_text(work.get('Campaign ID', pd.Series('', index=work.index)))
+            ad_group_ids = self.clean_text(work.get('Ad Group ID', pd.Series('', index=work.index)))
+            keyword_texts = self.clean_text(work.get('Keyword Text', pd.Series('', index=work.index)))
+            match_types = self.clean_text(work.get('Match Type', pd.Series('', index=work.index)))
+
+            entities = work['Entity'].fillna('').astype(str)
+
+            keyword_rows = work[entities.str.fullmatch('Keyword', case=False)].copy()
+            if not keyword_rows.empty:
+                for idx in keyword_rows.index:
+                    existing_exact_by_id.add(
+                        self._key_by_id(campaign_ids.loc[idx], ad_group_ids.loc[idx], keyword_texts.loc[idx], match_types.loc[idx])
+                    )
+                    existing_exact_by_name.add(
+                        self._key_by_name(campaign_names.loc[idx], ad_group_names.loc[idx], keyword_texts.loc[idx], match_types.loc[idx])
+                    )
+                    id_group_key, name_group_key = self._ad_group_key(
+                        campaign_ids.loc[idx], ad_group_ids.loc[idx], campaign_names.loc[idx], ad_group_names.loc[idx]
+                    )
+                    keyword_capable_ad_groups.add(id_group_key)
+                    keyword_capable_ad_groups.add(name_group_key)
+
+            negative_rows = work[entities.str.fullmatch('Negative Keyword', case=False)].copy()
+            if not negative_rows.empty:
+                for idx in negative_rows.index:
+                    existing_negative_by_id.add(
+                        self._key_by_id(campaign_ids.loc[idx], ad_group_ids.loc[idx], keyword_texts.loc[idx], match_types.loc[idx])
+                    )
+                    existing_negative_by_name.add(
+                        self._key_by_name(campaign_names.loc[idx], ad_group_names.loc[idx], keyword_texts.loc[idx], match_types.loc[idx])
+                    )
+
+            ad_group_rows = work[work.get('Ad Group ID', pd.Series('', index=work.index)).notna()].copy()
+            if not ad_group_rows.empty:
+                for idx in ad_group_rows.index:
+                    id_group_key, name_group_key = self._ad_group_key(
+                        campaign_ids.loc[idx], ad_group_ids.loc[idx], campaign_names.loc[idx], ad_group_names.loc[idx]
+                    )
+                    keyword_capable_ad_groups.add(id_group_key)
+                    keyword_capable_ad_groups.add(name_group_key)
+
+        return {
+            'existing_exact_by_id': existing_exact_by_id,
+            'existing_exact_by_name': existing_exact_by_name,
+            'existing_negative_by_id': existing_negative_by_id,
+            'existing_negative_by_name': existing_negative_by_name,
+            'keyword_capable_ad_groups': keyword_capable_ad_groups,
+        }
+
+    def _build_search_term_actions(self, perf_df, existing_state):
+        if perf_df is None or perf_df.empty:
+            return pd.DataFrame()
+
+        df = perf_df.copy()
+        actions = []
+        recommended_bids = []
+
+        for _, row in df.iterrows():
+            action = 'NO_ACTION'
+            search_term = self._normalize_term(row.get('search_term', ''))
+            match_type = self._normalize_term(row.get('match_type', ''))
+            cpc = float(row.get('cpc', 0) or 0)
+            rec_bid = min(max(round(cpc * 1.10, 2), 0.20), self.max_bid_cap)
+
+            id_group_key, name_group_key = self._ad_group_key(
+                row.get('campaign_id', ''),
+                row.get('ad_group_id', ''),
+                row.get('campaign_name', ''),
+                row.get('ad_group_name', ''),
+            )
+
+            exact_id_key = self._key_by_id(row.get('campaign_id', ''), row.get('ad_group_id', ''), search_term, 'exact')
+            exact_name_key = self._key_by_name(row.get('campaign_name', ''), row.get('ad_group_name', ''), search_term, 'exact')
+            negative_id_key = self._key_by_id(row.get('campaign_id', ''), row.get('ad_group_id', ''), search_term, 'negative phrase')
+            negative_name_key = self._key_by_name(row.get('campaign_name', ''), row.get('ad_group_name', ''), search_term, 'negative phrase')
+
+            clicks = float(row.get('clicks', 0) or 0)
+            spend = float(row.get('spend', 0) or 0)
+            orders = float(row.get('orders', 0) or 0)
+            sales = float(row.get('sales', 0) or 0)
+            roas = float(row.get('roas', 0) or 0)
+
+            eligible_group = (
+                id_group_key in existing_state['keyword_capable_ad_groups']
+                or name_group_key in existing_state['keyword_capable_ad_groups']
+            )
+
+            if (
+                self.enable_negative_keywords
+                and self._is_valid_harvest_term(search_term)
+                and ((clicks >= max(8, self.zero_order_click_threshold - 2)) or (spend >= 15))
+                and orders == 0
+                and sales == 0
+                and negative_id_key not in existing_state['existing_negative_by_id']
+                and negative_name_key not in existing_state['existing_negative_by_name']
+            ):
+                action = 'ADD_NEGATIVE_PHRASE'
+
+            elif (
+                self.enable_search_harvesting
+                and eligible_group
+                and self._is_valid_harvest_term(search_term)
+                and search_term != ''
+                and match_type != 'exact'
+                and clicks >= 5
+                and orders >= max(2, self.min_orders_for_scaling)
+                and roas >= max(self.min_roas, 1.5)
+                and exact_id_key not in existing_state['existing_exact_by_id']
+                and exact_name_key not in existing_state['existing_exact_by_name']
+            ):
+                action = 'HARVEST_TO_EXACT'
+
+            actions.append(action)
+            recommended_bids.append(rec_bid)
+
+        df['search_term_action'] = actions
+        df['recommended_bid'] = recommended_bids
+        return df
 
     def _build_bid_updates_for_sheet(self, sheet_df, perf_df, id_col, entity_col='Entity'):
         if sheet_df is None or sheet_df.empty:
@@ -2378,7 +2561,7 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         )
 
         sheet_text_col = None
-        for c in ['Keyword Text', 'Targeting', 'Product Targeting Expression', 'Resolved Expression']:
+        for c in ['Keyword Text', 'Targeting', 'Product Targeting Expression', 'Resolved Expression', 'Resolved Product Targeting Expression (Informational only)']:
             if c in work.columns:
                 sheet_text_col = c
                 break
@@ -2608,9 +2791,96 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         joined['ad_group'] = ''
         return joined
 
+    def _generate_harvest_bulk_updates(self, search_term_actions_df):
+        actionable = search_term_actions_df[
+            search_term_actions_df['search_term_action'] == 'HARVEST_TO_EXACT'
+        ].copy()
+
+        if actionable.empty:
+            return pd.DataFrame()
+
+        actionable = actionable[
+            actionable['campaign_id'].fillna('').astype(str).str.strip() != ''
+        ]
+        actionable = actionable[
+            actionable['ad_group_id'].fillna('').astype(str).str.strip() != ''
+        ]
+        if actionable.empty:
+            return pd.DataFrame()
+
+        actionable['normalized_term'] = actionable['search_term'].apply(self._normalize_term)
+        actionable = actionable[actionable['normalized_term'].apply(self._is_valid_harvest_term)]
+        actionable = actionable.drop_duplicates(subset=['campaign_id', 'ad_group_id', 'normalized_term'], keep='first')
+
+        bulk = pd.DataFrame(index=actionable.index)
+        bulk['Product'] = 'Sponsored Brands'
+        bulk['Entity'] = 'Keyword'
+        bulk['Operation'] = 'Create'
+        bulk['Campaign ID'] = actionable['campaign_id']
+        bulk['Ad Group ID'] = actionable['ad_group_id']
+        bulk['Keyword ID'] = ''
+        bulk['Product Targeting ID'] = ''
+        bulk['Campaign Name'] = actionable['campaign_name']
+        bulk['Ad Group Name'] = actionable['ad_group_name']
+        bulk['State'] = 'enabled'
+        bulk['Keyword Text'] = actionable['normalized_term']
+        bulk['Match Type'] = 'Exact'
+        bulk['Bid'] = actionable['recommended_bid']
+        bulk['Budget'] = ''
+        bulk['Optimizer Action'] = actionable['search_term_action']
+        bulk['ad_type'] = 'SB'
+        bulk['source_type'] = 'harvest'
+        bulk['campaign'] = actionable['campaign_name']
+        bulk['ad_group'] = actionable['ad_group_name']
+        return bulk.reset_index(drop=True)
+
+    def _generate_negative_bulk_updates(self, search_term_actions_df):
+        actionable = search_term_actions_df[
+            search_term_actions_df['search_term_action'] == 'ADD_NEGATIVE_PHRASE'
+        ].copy()
+
+        if actionable.empty:
+            return pd.DataFrame()
+
+        actionable = actionable[
+            actionable['campaign_id'].fillna('').astype(str).str.strip() != ''
+        ]
+        actionable = actionable[
+            actionable['ad_group_id'].fillna('').astype(str).str.strip() != ''
+        ]
+        if actionable.empty:
+            return pd.DataFrame()
+
+        actionable['normalized_term'] = actionable['search_term'].apply(self._normalize_term)
+        actionable = actionable[actionable['normalized_term'].apply(self._is_valid_harvest_term)]
+        actionable = actionable.drop_duplicates(subset=['campaign_id', 'ad_group_id', 'normalized_term'], keep='first')
+
+        bulk = pd.DataFrame(index=actionable.index)
+        bulk['Product'] = 'Sponsored Brands'
+        bulk['Entity'] = 'Negative Keyword'
+        bulk['Operation'] = 'Create'
+        bulk['Campaign ID'] = actionable['campaign_id']
+        bulk['Ad Group ID'] = actionable['ad_group_id']
+        bulk['Keyword ID'] = ''
+        bulk['Product Targeting ID'] = ''
+        bulk['Campaign Name'] = actionable['campaign_name']
+        bulk['Ad Group Name'] = actionable['ad_group_name']
+        bulk['State'] = 'enabled'
+        bulk['Keyword Text'] = actionable['normalized_term']
+        bulk['Match Type'] = 'Negative Phrase'
+        bulk['Bid'] = ''
+        bulk['Budget'] = ''
+        bulk['Optimizer Action'] = actionable['search_term_action']
+        bulk['ad_type'] = 'SB'
+        bulk['source_type'] = 'negative'
+        bulk['campaign'] = actionable['campaign_name']
+        bulk['ad_group'] = actionable['ad_group_name']
+        return bulk.reset_index(drop=True)
+
     def process(self):
         perf = self._load_search_terms()
         standard_sheet, multi_sheet, wb = self._bulk_sheets()
+        existing_state = self._build_existing_state(standard_sheet, multi_sheet)
 
         bid_updates = []
         budget_updates = []
@@ -2629,37 +2899,36 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
 
             if multi_sheet is not None and not multi_sheet.empty:
                 bid_updates.append(self._build_bid_updates_for_sheet(multi_sheet, perf.copy(), 'Keyword ID'))
+                bid_updates.append(self._build_bid_updates_for_sheet(multi_sheet, perf.copy(), 'Product Targeting ID'))
                 bid_updates.append(self._build_ad_group_fallback_bid_updates(multi_sheet, perf.copy()))
                 budget_updates.append(self._build_campaign_budget_updates(multi_sheet, perf))
 
+        search_term_actions = self._build_search_term_actions(perf, existing_state)
+        harvest_bulk_updates = self._generate_harvest_bulk_updates(search_term_actions)
+        negative_bulk_updates = self._generate_negative_bulk_updates(search_term_actions)
+
         bid_updates_df = safe_concat_frames(bid_updates, ignore_index=True)
         budget_updates_df = safe_concat_frames(budget_updates, ignore_index=True)
-        combined = safe_concat_frames([bid_updates_df, budget_updates_df], ignore_index=True)
+        combined = safe_concat_frames(
+            [bid_updates_df, harvest_bulk_updates, negative_bulk_updates, budget_updates_df],
+            ignore_index=True
+        )
 
         action_log = pd.DataFrame()
-        if not perf.empty:
-            action_log = perf[['campaign_name', 'ad_group_name', 'search_term', 'clicks', 'spend', 'sales', 'orders', 'roas']].copy()
+        if not search_term_actions.empty:
+            keep_cols = ['campaign_name', 'ad_group_name', 'search_term', 'clicks', 'spend', 'sales', 'orders', 'roas', 'search_term_action', 'recommended_bid']
+            action_log = search_term_actions[keep_cols].copy()
             action_log['ad_type'] = 'SB'
             action_log['source_type'] = 'search_term'
-
-            def sb_search_action(row):
-                if ((row['clicks'] >= 4) or (row['spend'] >= 12)) and row['orders'] == 0:
-                    return 'NEGATIVE_OR_BID_REVIEW'
-                if row['orders'] >= self.min_orders_for_scaling and row['roas'] >= self.min_roas * 1.10:
-                    return 'PROMOTE_OR_SCALE'
-                if row['clicks'] >= 4:
-                    return 'REVIEW_SEARCH_TERM'
-                return 'OBSERVE'
-
-            action_log['optimizer_action'] = action_log.apply(sb_search_action, axis=1)
+            action_log['optimizer_action'] = action_log['search_term_action']
 
         summary = {
-            'bid_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BID').sum()) if not combined.empty else 0,
-            'bid_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BID').sum()) if not combined.empty else 0,
-            'budget_increases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'INCREASE_BUDGET').sum()) if not combined.empty else 0,
-            'budget_decreases': int((combined.get('optimizer_action', pd.Series(dtype=str)) == 'DECREASE_BUDGET').sum()) if not combined.empty else 0,
-            'harvested_keywords': 0,
-            'negatives_added': 0,
+            'bid_increases': int((combined.get('optimizer_action', combined.get('Optimizer Action', pd.Series(dtype=str))) == 'INCREASE_BID').sum()) if not combined.empty else 0,
+            'bid_decreases': int((combined.get('optimizer_action', combined.get('Optimizer Action', pd.Series(dtype=str))) == 'DECREASE_BID').sum()) if not combined.empty else 0,
+            'budget_increases': int((combined.get('optimizer_action', combined.get('Optimizer Action', pd.Series(dtype=str))) == 'INCREASE_BUDGET').sum()) if not combined.empty else 0,
+            'budget_decreases': int((combined.get('optimizer_action', combined.get('Optimizer Action', pd.Series(dtype=str))) == 'DECREASE_BUDGET').sum()) if not combined.empty else 0,
+            'harvested_keywords': int((search_term_actions.get('search_term_action', pd.Series(dtype=str)) == 'HARVEST_TO_EXACT').sum()) if not search_term_actions.empty else 0,
+            'negatives_added': int((search_term_actions.get('search_term_action', pd.Series(dtype=str)) == 'ADD_NEGATIVE_PHRASE').sum()) if not search_term_actions.empty else 0,
         }
 
         diagnostics = pd.DataFrame([{
@@ -2668,6 +2937,8 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             'perf_rows_with_ids': perf_rows_with_ids,
             'search_rows_above_click_floor': search_rows_above_floor,
             'search_rows_zero_order_loss': search_rows_zero_order_loss,
+            'harvest_rows_generated': len(harvest_bulk_updates),
+            'negative_rows_generated': len(negative_bulk_updates),
             'bid_rows_generated': len(bid_updates_df),
             'budget_rows_generated': len(budget_updates_df),
             'combined_rows_generated': len(combined),
