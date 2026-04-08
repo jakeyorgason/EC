@@ -24,7 +24,6 @@ st.set_page_config(
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     export_df = df.copy()
 
-    # Only keep official Amazon bulk columns + Optimizer Action
     allowed_columns = [
         "Product",
         "Entity",
@@ -44,21 +43,52 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         "Optimizer Action",
     ]
 
-    # Normalize names first
     export_df.columns = [str(c).strip() for c in export_df.columns]
 
-    # Keep only allowed columns that actually exist
-    keep_cols = [c for c in allowed_columns if c in export_df.columns]
-    export_df = export_df[keep_cols].copy()
+    if "Product" in export_df.columns:
+        keep_cols = [c for c in allowed_columns if c in export_df.columns]
+        if keep_cols:
+            export_df = export_df[keep_cols].copy()
 
-    # Final duplicate protection
-    export_df.columns = [str(c).strip() for c in export_df.columns]
     export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         export_df.to_excel(writer, index=False, sheet_name="Output")
     return output.getvalue()
+
+
+def product_bulk_slice(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
+    if df is None or df.empty or "Product" not in df.columns:
+        return pd.DataFrame()
+
+    out = df[df["Product"].astype(str).str.strip() == product_name].copy()
+
+    allowed_columns = [
+        "Product",
+        "Entity",
+        "Operation",
+        "Campaign ID",
+        "Ad Group ID",
+        "Keyword ID",
+        "Product Targeting ID",
+        "Campaign Name",
+        "Ad Group Name",
+        "State",
+        "Keyword Text",
+        "Match Type",
+        "Bid",
+        "Budget",
+        "Daily Budget",
+        "Optimizer Action",
+    ]
+
+    out.columns = [str(c).strip() for c in out.columns]
+    keep_cols = [c for c in allowed_columns if c in out.columns]
+    out = out[keep_cols].copy()
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
+
+    return out.reset_index(drop=True)
 
 
 def safe_dict(value: Any) -> dict:
@@ -1690,32 +1720,13 @@ if "last_outputs" in st.session_state:
 
     if not combined_bulk_updates.empty:
         combined_bulk_updates.columns = [str(c).strip() for c in combined_bulk_updates.columns]
-    
-        allowed_bulk_columns = [
-            "Product",
-            "Entity",
-            "Operation",
-            "Campaign ID",
-            "Ad Group ID",
-            "Keyword ID",
-            "Product Targeting ID",
-            "Campaign Name",
-            "Ad Group Name",
-            "State",
-            "Keyword Text",
-            "Match Type",
-            "Bid",
-            "Budget",
-            "Daily Budget",
-            "Optimizer Action",
-        ]
-    
-        keep_cols = [c for c in allowed_bulk_columns if c in combined_bulk_updates.columns]
-        combined_bulk_updates = combined_bulk_updates[keep_cols].copy()
         combined_bulk_updates = combined_bulk_updates.loc[
             :, ~pd.Index(combined_bulk_updates.columns).duplicated(keep="first")
         ].copy()
-        
+
+    sp_bulk_updates = product_bulk_slice(combined_bulk_updates, "Sponsored Products")
+    sb_bulk_updates = product_bulk_slice(combined_bulk_updates, "Sponsored Brands")
+    sd_bulk_updates = product_bulk_slice(combined_bulk_updates, "Sponsored Display")
     bid_recommendations = safe_df(outputs.get("bid_recommendations"))
     search_term_actions = safe_df(outputs.get("search_term_actions"))
     campaign_budget_actions = safe_df(outputs.get("campaign_budget_actions"))
@@ -1994,14 +2005,38 @@ if "last_outputs" in st.session_state:
     d3, d4 = st.columns(2)
 
     with d1:
-        st.download_button(
-            label="Download Amazon Bulk Upload",
-            data=to_excel_bytes(combined_bulk_updates),
-            file_name="amazon_bulk_updates.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_bulk_upload_xlsx",
-            use_container_width=True,
-        )
+        if not sp_bulk_updates.empty:
+            st.download_button(
+                label="Download SP Bulk Upload",
+                data=to_excel_bytes(sp_bulk_updates),
+                file_name="amazon_bulk_updates_sp.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bulk_upload_sp_xlsx",
+                use_container_width=True,
+            )
+
+        if not sb_bulk_updates.empty:
+            st.download_button(
+                label="Download SB Bulk Upload",
+                data=to_excel_bytes(sb_bulk_updates),
+                file_name="amazon_bulk_updates_sb.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bulk_upload_sb_xlsx",
+                use_container_width=True,
+            )
+
+        if not sd_bulk_updates.empty:
+            st.download_button(
+                label="Download SD Bulk Upload",
+                data=to_excel_bytes(sd_bulk_updates),
+                file_name="amazon_bulk_updates_sd.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bulk_upload_sd_xlsx",
+                use_container_width=True,
+            )
+
+        if sp_bulk_updates.empty and sb_bulk_updates.empty and sd_bulk_updates.empty:
+            st.info("No bulk-upload rows available for this run.")
 
     with d2:
         st.download_button(
