@@ -24,23 +24,36 @@ st.set_page_config(
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     export_df = df.copy()
 
-    # Normalize names
+    # Only keep official Amazon bulk columns + Optimizer Action
+    allowed_columns = [
+        "Product",
+        "Entity",
+        "Operation",
+        "Campaign ID",
+        "Ad Group ID",
+        "Keyword ID",
+        "Product Targeting ID",
+        "Campaign Name",
+        "Ad Group Name",
+        "State",
+        "Keyword Text",
+        "Match Type",
+        "Bid",
+        "Budget",
+        "Daily Budget",
+        "Optimizer Action",
+    ]
+
+    # Normalize names first
     export_df.columns = [str(c).strip() for c in export_df.columns]
 
-    # Force unique header names
-    cols = pd.Series(export_df.columns, dtype="object")
-    seen = {}
-    new_cols = []
+    # Keep only allowed columns that actually exist
+    keep_cols = [c for c in allowed_columns if c in export_df.columns]
+    export_df = export_df[keep_cols].copy()
 
-    for col in cols:
-        if col not in seen:
-            seen[col] = 0
-            new_cols.append(col)
-        else:
-            seen[col] += 1
-            new_cols.append(f"{col}__dup{seen[col]}")
-
-    export_df.columns = new_cols
+    # Final duplicate protection
+    export_df.columns = [str(c).strip() for c in export_df.columns]
+    export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -1676,19 +1689,32 @@ if "last_outputs" in st.session_state:
     combined_bulk_updates = safe_df(outputs.get("combined_bulk_updates"))
 
     if not combined_bulk_updates.empty:
-        cols = pd.Series([str(c).strip() for c in combined_bulk_updates.columns], dtype="object")
-        seen = {}
-        new_cols = []
+        combined_bulk_updates.columns = [str(c).strip() for c in combined_bulk_updates.columns]
     
-        for col in cols:
-            if col not in seen:
-                seen[col] = 0
-                new_cols.append(col)
-            else:
-                seen[col] += 1
-                new_cols.append(f"{col}__dup{seen[col]}")
+        allowed_bulk_columns = [
+            "Product",
+            "Entity",
+            "Operation",
+            "Campaign ID",
+            "Ad Group ID",
+            "Keyword ID",
+            "Product Targeting ID",
+            "Campaign Name",
+            "Ad Group Name",
+            "State",
+            "Keyword Text",
+            "Match Type",
+            "Bid",
+            "Budget",
+            "Daily Budget",
+            "Optimizer Action",
+        ]
     
-        combined_bulk_updates.columns = new_cols
+        keep_cols = [c for c in allowed_bulk_columns if c in combined_bulk_updates.columns]
+        combined_bulk_updates = combined_bulk_updates[keep_cols].copy()
+        combined_bulk_updates = combined_bulk_updates.loc[
+            :, ~pd.Index(combined_bulk_updates.columns).duplicated(keep="first")
+        ].copy()
         
     bid_recommendations = safe_df(outputs.get("bid_recommendations"))
     search_term_actions = safe_df(outputs.get("search_term_actions"))
