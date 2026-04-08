@@ -2881,7 +2881,6 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             campaign_name=('campaign_name', 'first'),
         )
         perf_grouped['_campaign_key'] = self.clean_text(perf_grouped['campaign_id'])
-        perf_grouped['_campaign_name_key'] = self.normalize_join_text(perf_grouped['campaign_name'])
 
         joined = campaigns.merge(perf_grouped, on='_campaign_key', how='left')
 
@@ -3215,8 +3214,16 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
             }
 
         wb = self.load_bulk_workbook()
-        sd_sheet = wb.get('Sponsored Display Campaigns')
-        ras_sheet = wb.get('RAS Campaigns')
+        sd_name = find_matching_sheet_name(
+            wb.keys(),
+            ['Sponsored Display Campaigns', 'Sponsored Display', 'SD Campaigns', 'SD']
+        )
+        ras_name = find_matching_sheet_name(
+            wb.keys(),
+            ['RAS Campaigns', 'RAS']
+        )
+        sd_sheet = wb.get(sd_name) if sd_name else None
+        ras_sheet = wb.get(ras_name) if ras_name else None
 
         bid_updates = []
         budget_updates = []
