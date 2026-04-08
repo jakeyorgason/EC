@@ -24,15 +24,27 @@ st.set_page_config(
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     export_df = df.copy()
 
-    # Kill duplicate headers before export
+    # Normalize column names
     export_df.columns = [str(c).strip() for c in export_df.columns]
-    export_df = export_df.loc[
-        :, ~pd.Index(export_df.columns).duplicated(keep="first")
-    ].copy()
+
+    # 🔥 HARD FIX: force unique column names
+    cols = pd.Series(export_df.columns)
+    for dup in cols[cols.duplicated()].unique():
+        dup_idx = cols[cols == dup].index.tolist()
+        for i, idx in enumerate(dup_idx):
+            if i == 0:
+                continue
+            cols[idx] = f"{dup}_{i}"
+
+    export_df.columns = cols
+
+    # (Optional but safe) also drop duplicates if still present
+    export_df = export_df.loc[:, ~export_df.columns.duplicated(keep='first')]
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         export_df.to_excel(writer, index=False, sheet_name="Output")
+
     return output.getvalue()
 
 
