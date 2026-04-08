@@ -73,6 +73,54 @@ def safe_concat_frames(frames, ignore_index=True):
     return pd.concat(valid_frames, ignore_index=ignore_index)
 
 
+def apply_cross_type_bulk_safeguards(df):
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    preferred_columns = [
+        'Product', 'Entity', 'Operation', 'Campaign ID', 'Ad Group ID', 'Keyword ID',
+        'Product Targeting ID', 'Campaign Name', 'Ad Group Name', 'State',
+        'Keyword Text', 'Match Type', 'Bid', 'Budget', 'Daily Budget', 'Optimizer Action',
+        'ad_type', 'source_type', 'campaign', 'ad_group'
+    ]
+
+    for col in preferred_columns:
+        if col not in out.columns:
+            out[col] = ''
+
+    ordered_cols = preferred_columns + [c for c in out.columns if c not in preferred_columns]
+    out = out[ordered_cols]
+
+    text_cols = [
+        'Product', 'Entity', 'Operation', 'Campaign ID', 'Ad Group ID', 'Keyword ID',
+        'Product Targeting ID', 'Campaign Name', 'Ad Group Name', 'State',
+        'Keyword Text', 'Match Type', 'Optimizer Action', 'ad_type', 'source_type',
+        'campaign', 'ad_group'
+    ]
+    for col in text_cols:
+        if col in out.columns:
+            out[col] = out[col].fillna('').astype(str).str.replace(r'\.0$', '', regex=True)
+
+    for col in ['Keyword Text', 'Match Type', 'Campaign Name', 'Ad Group Name']:
+        if col in out.columns:
+            out[col] = out[col].fillna('').astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
+
+    signature_cols = [
+        'Product', 'Entity', 'Operation', 'Campaign ID', 'Ad Group ID', 'Keyword ID',
+        'Product Targeting ID', 'Campaign Name', 'Ad Group Name', 'Keyword Text', 'Match Type',
+        'Bid', 'Budget', 'Daily Budget'
+    ]
+    existing_signature_cols = [c for c in signature_cols if c in out.columns]
+    if existing_signature_cols:
+        out = out.drop_duplicates(subset=existing_signature_cols, keep='last')
+    else:
+        out = out.drop_duplicates()
+
+    return out.reset_index(drop=True)
+
+
 
 class Phase1UploadValidator:
     """Phase 1 upload validation and spend reconciliation.
@@ -2506,7 +2554,7 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             if (
                 self.enable_negative_keywords
                 and self._is_valid_harvest_term(search_term)
-                and ((clicks >= max(8, self.zero_order_click_threshold - 2)) or (spend >= 15))
+                and ((clicks >= 4) or (spend >= 12))
                 and orders == 0
                 and sales == 0
                 and negative_id_key not in existing_state['existing_negative_by_id']
@@ -2520,8 +2568,8 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
                 and self._is_valid_harvest_term(search_term)
                 and search_term != ''
                 and match_type != 'exact'
-                and clicks >= 5
-                and orders >= max(2, self.min_orders_for_scaling)
+                and clicks >= 4
+                and orders >= 1
                 and roas >= max(self.min_roas, 1.5)
                 and exact_id_key not in existing_state['existing_exact_by_id']
                 and exact_name_key not in existing_state['existing_exact_by_name']
@@ -2753,15 +2801,21 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         return joined
 
     def _build_campaign_budget_updates(self, sheet_df, perf_df, campaign_id_col='Campaign ID', budget_col='Budget'):
-        if sheet_df is None or sheet_df.empty or campaign_id_col not in sheet_df.columns or budget_col not in sheet_df.columns:
+        if sheet_df is None or sheet_df.empty or budget_col not in sheet_df.columns:
             return pd.DataFrame()
+
         campaigns = sheet_df.copy()
         if 'Entity' in campaigns.columns:
             campaigns = campaigns[campaigns['Entity'].astype(str).str.contains('Campaign', case=False, na=False)].copy()
         if campaigns.empty:
             return pd.DataFrame()
-        campaigns['_campaign_key'] = self.clean_text(campaigns[campaign_id_col])
-        perf = perf_df.groupby('campaign_id', as_index=False).agg(
+
+        campaigns['_campaign_key'] = self.clean_text(campaigns.get(campaign_id_col, pd.Series('', index=campaigns.index)))
+        campaigns['_campaign_name_key'] = self.normalize_join_text(
+            campaigns.get('Campaign Name', campaigns.get('Campaign Name (Informational only)', pd.Series('', index=campaigns.index)))
+        )
+
+        perf_grouped = perf_df.groupby('campaign_id', as_index=False).agg(
             clicks=('clicks', 'sum'),
             spend=('spend', 'sum'),
             sales=('sales', 'sum'),
@@ -2769,19 +2823,66 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             roas=('roas', 'mean'),
             campaign_name=('campaign_name', 'first'),
         )
-        perf['_campaign_key'] = self.clean_text(perf['campaign_id'])
-        joined = campaigns.merge(perf, on='_campaign_key', how='left')
-        joined['roas'] = joined['roas'].fillna(0)
-        joined['orders'] = joined['orders'].fillna(0)
+        perf_grouped['_campaign_key'] = self.clean_text(perf_grouped['campaign_id'])
+        perf_grouped['_campaign_name_key'] = self.normalize_join_text(perf_grouped['campaign_name'])
+
+        joined = campaigns.merge(perf_grouped, on='_campaign_key', how='left')
+
+        if {'clicks', 'spend', 'sales', 'orders', 'roas'}.issubset(joined.columns):
+            perf_by_name = perf_df.groupby('campaign_name_key', as_index=False).agg(
+                fb_clicks=('clicks', 'sum'),
+                fb_spend=('spend', 'sum'),
+                fb_sales=('sales', 'sum'),
+                fb_orders=('orders', 'sum'),
+                fb_roas=('roas', 'mean'),
+            )
+            joined = joined.merge(
+                perf_by_name,
+                left_on='_campaign_name_key',
+                right_on='campaign_name_key',
+                how='left'
+            )
+            joined['clicks'] = joined['clicks'].fillna(joined['fb_clicks']).fillna(0)
+            joined['spend'] = joined['spend'].fillna(joined['fb_spend']).fillna(0)
+            joined['sales'] = joined['sales'].fillna(joined['fb_sales']).fillna(0)
+            joined['orders'] = joined['orders'].fillna(joined['fb_orders']).fillna(0)
+            joined['roas'] = joined['roas'].fillna(joined['fb_roas']).fillna(0)
+        else:
+            joined['clicks'] = 0
+            joined['spend'] = 0
+            joined['sales'] = 0
+            joined['orders'] = 0
+            joined['roas'] = 0
+
         joined['current_budget'] = self.safe_numeric(joined[budget_col])
-        joined['optimizer_action'] = joined.apply(lambda r: self._budget_action(r['roas'], r['orders']) if self.enable_budget_updates else None, axis=1)
+
+        def sb_budget_action(row):
+            clicks = float(row['clicks'] or 0)
+            orders = float(row['orders'] or 0)
+            roas = float(row['roas'] or 0)
+            spend = float(row['spend'] or 0)
+
+            if (clicks >= 6 or spend >= 20) and orders == 0:
+                return 'DECREASE_BUDGET'
+            if roas > 0 and roas < self.min_roas:
+                return 'DECREASE_BUDGET'
+            if orders >= self.min_orders_for_scaling and roas >= self.min_roas * 1.10:
+                return 'INCREASE_BUDGET'
+            return None
+
+        joined['optimizer_action'] = joined.apply(
+            lambda r: sb_budget_action(r) if self.enable_budget_updates else None,
+            axis=1,
+        )
         joined = joined[joined['optimizer_action'].notna()].copy()
         if joined.empty:
             return pd.DataFrame()
+
         joined['new_budget'] = joined.apply(lambda r: self._adjust_budget(r['current_budget'], r['optimizer_action']), axis=1)
         joined = joined[joined['new_budget'] != joined['current_budget']].copy()
         if joined.empty:
             return pd.DataFrame()
+
         joined[budget_col] = joined['new_budget']
         joined['Operation'] = 'update'
         joined['Product'] = 'Sponsored Brands'
@@ -3478,7 +3579,11 @@ class Phase2AdsOrchestrator:
             for k,v in sb_out.get('account_summary', {}).items():
                 if isinstance(v, (int,float,np.integer,np.floating)):
                     combined_account_summary[k] = combined_account_summary.get(k,0)+v
-            all_suggestions.append('Sponsored Brands starter optimizer used bid and budget logic from search term performance.')
+            all_suggestions.append('Sponsored Brands optimizer used bid, budget, harvest, and negative logic from search term performance.')
+            if sb_out.get('diagnostics') is not None and not safe_concat_frames([sb_out.get('diagnostics')]).empty:
+                sb_diag = sb_out.get('diagnostics').iloc[0]
+                if int(sb_diag.get('combined_rows_generated', 0) or 0) == 0 and int(sb_diag.get('search_rows_zero_order_loss', 0) or 0) > 0:
+                    all_warnings.append('Sponsored Brands had inefficient search-term rows but no final actions; review column mapping or campaign structure if this persists.')
         else:
             execution_summary_rows.append({'ad_type':'SB','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sb_spend',0.0)})
 
@@ -3500,13 +3605,13 @@ class Phase2AdsOrchestrator:
             for k,v in sd_out.get('account_summary', {}).items():
                 if isinstance(v, (int,float,np.integer,np.floating)):
                     combined_account_summary[k] = combined_account_summary.get(k,0)+v
-            all_suggestions.append('Sponsored Display starter optimizer used target-level and campaign budget logic.')
+            all_suggestions.append('Sponsored Display optimizer used target-level and campaign budget logic.')
         else:
             execution_summary_rows.append({'ad_type':'SD','optimized':False,'status':'Skipped - missing required uploads','actions':0,'spend':validation.get('spend_summary',{}).get('sd_spend',0.0)})
 
         execution_summary = pd.DataFrame(execution_summary_rows)
         optimizer_diagnostics = safe_concat_frames(optimizer_diagnostics_frames, ignore_index=True)
-        combined_bulk_updates = safe_concat_frames(all_bulk_updates, ignore_index=True)
+        combined_bulk_updates = apply_cross_type_bulk_safeguards(safe_concat_frames(all_bulk_updates, ignore_index=True))
         bid_recommendations = safe_concat_frames(all_bid_updates, ignore_index=True)
         search_term_actions = safe_concat_frames(all_search_actions, ignore_index=True)
         campaign_budget_actions = safe_concat_frames(all_budget_actions, ignore_index=True)
