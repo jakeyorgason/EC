@@ -79,6 +79,20 @@ def apply_cross_type_bulk_safeguards(df):
 
     out = df.copy()
 
+    cols = pd.Series([str(c).strip() for c in out.columns], dtype="object")
+    seen = {}
+    new_cols = []
+
+    for col in cols:
+        if col not in seen:
+            seen[col] = 0
+            new_cols.append(col)
+        else:
+            seen[col] += 1
+            new_cols.append(f"{col}__dup{seen[col]}")
+
+    out.columns = new_cols
+
     # HARD FIX: remove duplicate headers immediately
     out.columns = [str(c).strip() for c in out.columns]
     out = out.loc[:, ~pd.Index(out.columns).duplicated(keep='first')].copy()
@@ -99,6 +113,7 @@ def apply_cross_type_bulk_safeguards(df):
             out[col] = ''
 
     ordered_cols = preferred_columns + [c for c in out.columns if c not in preferred_columns]
+    ordered_cols = list(dict.fromkeys(ordered_cols))
     out = out[ordered_cols]
 
     text_cols = [
