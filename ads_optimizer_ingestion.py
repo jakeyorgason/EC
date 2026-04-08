@@ -7,7 +7,6 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-
 def find_matching_sheet_name(sheet_names, candidates):
     normalized = {str(name).strip().lower(): name for name in sheet_names}
 
@@ -24,7 +23,6 @@ def find_matching_sheet_name(sheet_names, candidates):
                 return original_name
 
     return None
-
 
 SP_BULK_SHEET_CANDIDATES = [
     "Sponsored Products Campaigns",
@@ -49,7 +47,6 @@ SD_BULK_SHEET_CANDIDATES = [
     "RAS Campaigns",
 ]
 
-
 def safe_concat_frames(frames, ignore_index=True):
     """Concatenate only non-empty DataFrames and never raise on an empty input list."""
     valid_frames = []
@@ -72,34 +69,21 @@ def safe_concat_frames(frames, ignore_index=True):
         return pd.DataFrame()
     return pd.concat(valid_frames, ignore_index=ignore_index)
 
+def _dedupe_and_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize headers and keep the first occurrence of any duplicate column names."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+
+    out = df.copy()
+    out.columns = [str(c).strip() for c in out.columns]
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
+    return out
 
 def apply_cross_type_bulk_safeguards(df):
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
 
-    out = df.copy()
-
-    cols = pd.Series([str(c).strip() for c in out.columns], dtype="object")
-    seen = {}
-    new_cols = []
-
-    for col in cols:
-        if col not in seen:
-            seen[col] = 0
-            new_cols.append(col)
-        else:
-            seen[col] += 1
-            new_cols.append(f"{col}__dup{seen[col]}")
-
-    out.columns = new_cols
-
-    # HARD FIX: remove duplicate headers immediately
-    out.columns = [str(c).strip() for c in out.columns]
-    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep='first')].copy()
-
-    # NEW: kill duplicate headers immediately
-    out = out.loc[:, ~out.columns.duplicated()].copy()
-    out.columns = [str(c).strip() for c in out.columns]
+    out = _dedupe_and_strip_columns(df)
 
     preferred_columns = [
         'Product', 'Entity', 'Operation', 'Campaign ID', 'Ad Group ID', 'Keyword ID',
@@ -141,17 +125,8 @@ def apply_cross_type_bulk_safeguards(df):
     else:
         out = out.drop_duplicates()
 
-    # NEW: kill duplicate headers again right before return
-    out = out.loc[:, ~out.columns.duplicated()].copy()
-    out.columns = [str(c).strip() for c in out.columns]
-
-    # HARD FIX: remove duplicate headers again before returning
-    out.columns = [str(c).strip() for c in out.columns]
-    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep='first')].copy()
-    
+    out = _dedupe_and_strip_columns(out)
     return out.reset_index(drop=True)
-
-
 
 class Phase1UploadValidator:
     """Phase 1 upload validation and spend reconciliation.
@@ -403,16 +378,6 @@ class Phase1UploadValidator:
                 'total_sales': round(sp_sales + sb_sales + sd_sales, 2),
             },
         }
-
-
-import io
-import os
-import calendar
-from datetime import date
-
-import numpy as np
-import pandas as pd
-
 
 class AdsOptimizerEngine:
     def __init__(
@@ -1986,16 +1951,8 @@ class AdsOptimizerEngine:
     # SAFEGUARDS
     # -----------------------------
     def apply_final_safeguards(self, combined_bulk_updates):
-        df = combined_bulk_updates.copy()
+        df = _dedupe_and_strip_columns(combined_bulk_updates)
 
-        # HARD FIX: remove duplicate headers immediately
-        df.columns = [str(c).strip() for c in df.columns]
-        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep='first')].copy()
-    
-        # NEW: remove duplicate headers immediately
-        df = df.loc[:, ~df.columns.duplicated()].copy()
-        df.columns = [str(c).strip() for c in df.columns]
-    
         required_columns = [
             "Product",
             "Entity",
@@ -2011,13 +1968,13 @@ class AdsOptimizerEngine:
             "Bid",
             "Daily Budget",
         ]
-    
+
         for col in required_columns:
             if col not in df.columns:
                 df[col] = ""
-    
+
         df = df[required_columns + [c for c in df.columns if c not in required_columns]]
-    
+
         for col in [
             "Campaign ID",
             "Ad Group ID",
@@ -2034,9 +1991,9 @@ class AdsOptimizerEngine:
             if col in df.columns:
                 df[col] = df[col].fillna("").astype(str)
                 df[col] = df[col].str.replace(r"\.0$", "", regex=True)
-    
+
         df = df.drop_duplicates()
-    
+
         signature_cols = [
             "Entity",
             "Campaign ID",
@@ -2048,18 +2005,11 @@ class AdsOptimizerEngine:
             "Operation",
         ]
         existing_signature_cols = [c for c in signature_cols if c in df.columns]
-    
+
         if existing_signature_cols:
             df = df.drop_duplicates(subset=existing_signature_cols, keep="last")
-    
-        # NEW: remove duplicate headers again before return
-        df = df.loc[:, ~df.columns.duplicated()].copy()
-        df.columns = [str(c).strip() for c in df.columns]
-    
-        # HARD FIX: remove duplicate headers again before returning
-        df.columns = [str(c).strip() for c in df.columns]
-        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep='first')].copy()
-        
+
+        df = _dedupe_and_strip_columns(df)
         return df.reset_index(drop=True)
 
     # -----------------------------
@@ -2218,7 +2168,6 @@ class AdsOptimizerEngine:
 class Phase2UploadValidator(Phase1UploadValidator):
     """Phase 2 validator currently reuses the Phase 1 validation logic."""
     pass
-
 
 class _Phase2BaseOptimizer:
     def __init__(
@@ -2382,8 +2331,6 @@ class _Phase2BaseOptimizer:
         elif action == 'DECREASE_BUDGET':
             budget = max(1.0, budget * (1 - self.budget_down_pct))
         return round(budget, 2)
-
-
 
 class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
     def __init__(self, bulk_file, search_term_file=None, impression_share_file=None, **kwargs):
@@ -3176,7 +3123,6 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             'diagnostics': diagnostics,
         }
 
-
 class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
     def __init__(self, bulk_file, targeting_file=None, **kwargs):
         super().__init__(bulk_file=bulk_file, enable_search_harvesting=False, enable_negative_keywords=False, **kwargs)
@@ -3522,7 +3468,6 @@ class SponsoredDisplayOptimizer(_Phase2BaseOptimizer):
             'diagnostics': diagnostics,
         }
 
-
 class Phase2AdsOrchestrator:
     def __init__(
         self,
@@ -3733,46 +3678,25 @@ class Phase2AdsOrchestrator:
         bid_recommendations = safe_concat_frames(all_bid_updates, ignore_index=True)
         search_term_actions = safe_concat_frames(all_search_actions, ignore_index=True)
         campaign_budget_actions = safe_concat_frames(all_budget_actions, ignore_index=True)
-        
-        # HARD FIX: dedupe headers on every exported dataframe
-        for _df_name in [
-            'execution_summary',
-            'optimizer_diagnostics',
-            'combined_bulk_updates',
-            'bid_recommendations',
-            'search_term_actions',
-            'campaign_budget_actions',
-        ]:
-            _df = locals().get(_df_name)
+
+        exported_frames = {
+            'execution_summary': execution_summary,
+            'optimizer_diagnostics': optimizer_diagnostics,
+            'combined_bulk_updates': combined_bulk_updates,
+            'bid_recommendations': bid_recommendations,
+            'search_term_actions': search_term_actions,
+            'campaign_budget_actions': campaign_budget_actions,
+        }
+        for _name, _df in exported_frames.items():
             if isinstance(_df, pd.DataFrame) and not _df.empty:
-                _df.columns = [str(c).strip() for c in _df.columns]
-                _df = _df.loc[:, ~pd.Index(_df.columns).duplicated(keep='first')].copy()
-                locals()[_df_name] = _df
-        
-        # NEW: remove duplicate headers from every exported dataframe
-        if isinstance(execution_summary, pd.DataFrame) and not execution_summary.empty:
-            execution_summary = execution_summary.loc[:, ~execution_summary.columns.duplicated()].copy()
-            execution_summary.columns = [str(c).strip() for c in execution_summary.columns]
-        
-        if isinstance(optimizer_diagnostics, pd.DataFrame) and not optimizer_diagnostics.empty:
-            optimizer_diagnostics = optimizer_diagnostics.loc[:, ~optimizer_diagnostics.columns.duplicated()].copy()
-            optimizer_diagnostics.columns = [str(c).strip() for c in optimizer_diagnostics.columns]
-        
-        if isinstance(combined_bulk_updates, pd.DataFrame) and not combined_bulk_updates.empty:
-            combined_bulk_updates = combined_bulk_updates.loc[:, ~combined_bulk_updates.columns.duplicated()].copy()
-            combined_bulk_updates.columns = [str(c).strip() for c in combined_bulk_updates.columns]
-        
-        if isinstance(bid_recommendations, pd.DataFrame) and not bid_recommendations.empty:
-            bid_recommendations = bid_recommendations.loc[:, ~bid_recommendations.columns.duplicated()].copy()
-            bid_recommendations.columns = [str(c).strip() for c in bid_recommendations.columns]
-        
-        if isinstance(search_term_actions, pd.DataFrame) and not search_term_actions.empty:
-            search_term_actions = search_term_actions.loc[:, ~search_term_actions.columns.duplicated()].copy()
-            search_term_actions.columns = [str(c).strip() for c in search_term_actions.columns]
-        
-        if isinstance(campaign_budget_actions, pd.DataFrame) and not campaign_budget_actions.empty:
-            campaign_budget_actions = campaign_budget_actions.loc[:, ~campaign_budget_actions.columns.duplicated()].copy()
-            campaign_budget_actions.columns = [str(c).strip() for c in campaign_budget_actions.columns]
+                exported_frames[_name] = _dedupe_and_strip_columns(_df)
+
+        execution_summary = exported_frames['execution_summary']
+        optimizer_diagnostics = exported_frames['optimizer_diagnostics']
+        combined_bulk_updates = exported_frames['combined_bulk_updates']
+        bid_recommendations = exported_frames['bid_recommendations']
+        search_term_actions = exported_frames['search_term_actions']
+        campaign_budget_actions = exported_frames['campaign_budget_actions']
         spend_summary = validation.get('spend_summary', {})
         combined_account_summary['sp_total_spend'] = spend_summary.get('sp_spend', 0.0)
         combined_account_summary['sb_total_spend'] = spend_summary.get('sb_spend', 0.0)
