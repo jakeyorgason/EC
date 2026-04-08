@@ -24,27 +24,27 @@ st.set_page_config(
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     export_df = df.copy()
 
-    # Normalize column names
+    # Normalize names
     export_df.columns = [str(c).strip() for c in export_df.columns]
 
-    # 🔥 HARD FIX: force unique column names
-    cols = pd.Series(export_df.columns)
-    for dup in cols[cols.duplicated()].unique():
-        dup_idx = cols[cols == dup].index.tolist()
-        for i, idx in enumerate(dup_idx):
-            if i == 0:
-                continue
-            cols[idx] = f"{dup}_{i}"
+    # Force unique header names
+    cols = pd.Series(export_df.columns, dtype="object")
+    seen = {}
+    new_cols = []
 
-    export_df.columns = cols
+    for col in cols:
+        if col not in seen:
+            seen[col] = 0
+            new_cols.append(col)
+        else:
+            seen[col] += 1
+            new_cols.append(f"{col}__dup{seen[col]}")
 
-    # (Optional but safe) also drop duplicates if still present
-    export_df = export_df.loc[:, ~export_df.columns.duplicated(keep='first')]
+    export_df.columns = new_cols
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         export_df.to_excel(writer, index=False, sheet_name="Output")
-
     return output.getvalue()
 
 
@@ -1676,10 +1676,20 @@ if "last_outputs" in st.session_state:
     combined_bulk_updates = safe_df(outputs.get("combined_bulk_updates"))
 
     if not combined_bulk_updates.empty:
-        combined_bulk_updates.columns = [str(c).strip() for c in combined_bulk_updates.columns]
-        combined_bulk_updates = combined_bulk_updates.loc[
-            :, ~pd.Index(combined_bulk_updates.columns).duplicated(keep="first")
-        ].copy()
+        cols = pd.Series([str(c).strip() for c in combined_bulk_updates.columns], dtype="object")
+        seen = {}
+        new_cols = []
+    
+        for col in cols:
+            if col not in seen:
+                seen[col] = 0
+                new_cols.append(col)
+            else:
+                seen[col] += 1
+                new_cols.append(f"{col}__dup{seen[col]}")
+    
+        combined_bulk_updates.columns = new_cols
+        
     bid_recommendations = safe_df(outputs.get("bid_recommendations"))
     search_term_actions = safe_df(outputs.get("search_term_actions"))
     campaign_budget_actions = safe_df(outputs.get("campaign_budget_actions"))
