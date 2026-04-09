@@ -3,7 +3,7 @@ import os
 import json
 import calendar
 from datetime import date
-from typing import Optional, Any
+from typing import Any, Optional
 
 import pandas as pd
 import streamlit as st
@@ -197,6 +197,72 @@ def render_readiness_block(label: str, ready_state: dict, note: str = "") -> Non
         st.caption(note)
 
 
+
+
+def get_scaling_action_count(df: pd.DataFrame) -> int:
+    if df is None or df.empty or "Optimizer Action" not in df.columns:
+        return 0
+    return int(
+        df["Optimizer Action"].astype(str).str.upper().isin(["INCREASE_BID", "INCREASE_BUDGET"]).sum()
+    )
+
+
+def estimate_tacos_suppressed_scaling(
+    combined_bulk_updates: pd.DataFrame,
+    account_health: dict,
+    simulation_summary: dict,
+) -> dict:
+    if combined_bulk_updates is None or combined_bulk_updates.empty:
+        return {
+            "suppressed_bid_increases": 0,
+            "suppressed_budget_increases": 0,
+            "suppressed_total": 0,
+        }
+
+    tacos_status = str(account_health.get("tacos_status", "not_used")).lower()
+    if tacos_status != "above_target":
+        return {
+            "suppressed_bid_increases": 0,
+            "suppressed_budget_increases": 0,
+            "suppressed_total": 0,
+        }
+
+    return {
+        "suppressed_bid_increases": int(simulation_summary.get("bid_increases", 0) or 0),
+        "suppressed_budget_increases": int(simulation_summary.get("budget_increases", 0) or 0),
+        "suppressed_total": int(simulation_summary.get("bid_increases", 0) or 0) + int(simulation_summary.get("budget_increases", 0) or 0),
+    }
+
+
+def build_conflicting_signals(
+    account_health: dict,
+    simulation_summary: dict,
+    account_summary: dict,
+) -> list[str]:
+    messages = []
+
+    tacos_status = str(account_health.get("tacos_status", "not_used")).lower()
+    health_status = str(account_health.get("health_status", "unknown")).lower()
+    scalable = get_int(account_summary.get("campaigns_scalable"))
+    bid_increases = get_int(simulation_summary.get("bid_increases"))
+    budget_increases = get_int(simulation_summary.get("budget_increases"))
+
+    if tacos_status == "above_target" and scalable > 0:
+        messages.append(
+            "Scaling opportunities exist, but account-wide TACOS is above target, so growth is being constrained."
+        )
+
+    if health_status == "under_target" and (bid_increases > 0 or budget_increases > 0):
+        messages.append(
+            "Some entities still qualify for scaling, but overall account efficiency is below target, so scaling should be reviewed carefully."
+        )
+
+    if scalable > 0 and bid_increases == 0 and budget_increases == 0:
+        messages.append(
+            "The account has scalable campaigns, but no scaling actions were generated. A guardrail is likely suppressing growth."
+        )
+
+    return messages
 def build_narrative(account_health: dict, simulation_summary: dict, pacing_status: str) -> list[str]:
     notes = []
     health_status = account_health.get("health_status", "unknown")
@@ -1152,9 +1218,15 @@ if diagnostics:
 # Run Optimizer
 # =========================================================
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-button_col1, button_col2, button_col3 = st.columns([3, 2, 3])
-with button_col2:
+st.markdown('<div class="section-title">Run Optimizer</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-note">When your uploads and settings are ready, run the optimizer across all available ad types.</div>',
+    unsafe_allow_html=True,
+)
+run_left, run_center, run_right = st.columns([2, 3, 2])
+with run_center:
     run_optimizer = st.button("Run Optimization for Available Ad Types", type="primary", use_container_width=True)
+    st.caption("This will apply the current settings, guardrails, and uploaded report context.")
 
 if run_optimizer:
     if not runnable_types:
@@ -1198,6 +1270,12 @@ if "last_outputs" in st.session_state:
     optimizer_diagnostics = safe_df(outputs.get("optimizer_diagnostics"))
     output_top_opportunities = safe_df(outputs.get("top_opportunities"))
 
+    tacos_total_ad_spend_used = get_number(output_account_health.get("effective_total_ad_spend"))
+    tacos_business_sales_used = get_number(output_account_health.get("business_total_sales"))
+    tacos_pct_value = output_account_health.get("tacos_pct")
+    tacos_status_value = str(output_account_health.get("tacos_status", "not_used")).replace("_", " ").title()
+    tacos_guardrail_target = max_tacos_target if enable_tacos_control else None
+
     ai_override_log_df = pd.DataFrame()
     ai_impact_summary = {}
     ai_executive_summary = ""
@@ -1217,6 +1295,17 @@ if "last_outputs" in st.session_state:
                 ai_impact_summary = build_ai_impact_summary(ai_override_log_df, original_bulk_count, len(combined_bulk_updates), ai_executive_summary)
         except Exception as e:
             st.warning(f"AI optimization skipped: {e}")
+
+    suppressed_summary = estimate_tacos_suppressed_scaling(
+        combined_bulk_updates=combined_bulk_updates,
+        account_health=output_account_health,
+        simulation_summary=simulation_summary,
+    )
+    conflicting_signals = build_conflicting_signals(
+        account_health=output_account_health,
+        simulation_summary=simulation_summary,
+        account_summary=output_account_summary,
+    )
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Execution Summary</div>', unsafe_allow_html=True)
@@ -1258,6 +1347,57 @@ if "last_outputs" in st.session_state:
         render_metric_card("Low Confidence", str(get_int(simulation_summary.get("low_confidence_actions"))), tone="warn")
     with sim3:
         render_metric_card("Estimated Spend Impact", f"{get_number(simulation_summary.get('estimated_spend_impact_pct')):,.2f}%", tone="brand", small=True)
+
+    if enable_tacos_control:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">TACOS Calculation Transparency</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-note">This shows the exact numerator and denominator used for the account-wide TACOS guardrail.</div>',
+            unsafe_allow_html=True,
+        )
+
+        tx1, tx2, tx3, tx4 = st.columns(4)
+        with tx1:
+            render_metric_card("Total Ad Spend Used", f"${tacos_total_ad_spend_used:,.2f}", tone="brand")
+        with tx2:
+            render_metric_card(
+                "Business Report Sales Used",
+                f"${tacos_business_sales_used:,.2f}" if tacos_business_sales_used > 0 else "Missing",
+                tone="brand" if tacos_business_sales_used > 0 else "bad",
+            )
+        with tx3:
+            tacos_tone = "bad" if str(output_account_health.get("tacos_status", "")).lower() == "above_target" else "good"
+            render_metric_card(
+                "Account-Wide TACOS",
+                f"{float(tacos_pct_value):.2f}%" if tacos_pct_value is not None else "Missing",
+                tone=tacos_tone,
+            )
+        with tx4:
+            render_metric_card(
+                "Max TACOS Target",
+                f"{tacos_guardrail_target:.2f}%" if tacos_guardrail_target is not None else "Disabled",
+                tone="warn",
+            )
+
+        st.caption(f"Scaling Status: {'Constrained' if str(output_account_health.get('tacos_status', '')).lower() == 'above_target' else 'Allowed'} ({tacos_status_value})")
+
+        sx1, sx2, sx3 = st.columns(3)
+        with sx1:
+            render_metric_card("Suppressed Bid Increases", str(suppressed_summary.get("suppressed_bid_increases", 0)), tone="warn")
+        with sx2:
+            render_metric_card("Suppressed Budget Increases", str(suppressed_summary.get("suppressed_budget_increases", 0)), tone="warn")
+        with sx3:
+            render_metric_card("Total Scaling Suppressed", str(suppressed_summary.get("suppressed_total", 0)), tone="warn")
+
+    if conflicting_signals:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Conflicting Signals</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-note">These are important situations where performance signals and account guardrails are pulling in different directions.</div>',
+            unsafe_allow_html=True,
+        )
+        for msg in conflicting_signals:
+            st.warning(msg)
 
     if not output_top_opportunities.empty:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -1324,8 +1464,7 @@ if "last_outputs" in st.session_state:
     with tab8:
         display_df(optimizer_diagnostics, height=520)
 
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Downloads</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-note">Export the primary bulk uploads below. Additional reports are available in the optional section.</div>',
@@ -1333,43 +1472,19 @@ if "last_outputs" in st.session_state:
     )
 
     primary1, primary2, primary3 = st.columns(3)
-
     with primary1:
         if not sp_bulk_updates.empty:
-            st.download_button(
-                label="Download SP Bulk Upload",
-                data=to_excel_bytes(sp_bulk_updates),
-                file_name="amazon_bulk_updates_sp.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_bulk_upload_sp_xlsx",
-                use_container_width=True,
-            )
+            st.download_button("Download SP Bulk Upload", data=to_excel_bytes(sp_bulk_updates), file_name="amazon_bulk_updates_sp.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         else:
             st.info("No SP bulk upload")
-
     with primary2:
         if not sb_bulk_updates.empty:
-            st.download_button(
-                label="Download SB Bulk Upload",
-                data=to_excel_bytes(sb_bulk_updates),
-                file_name="amazon_bulk_updates_sb.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_bulk_upload_sb_xlsx",
-                use_container_width=True,
-            )
+            st.download_button("Download SB Bulk Upload", data=to_excel_bytes(sb_bulk_updates), file_name="amazon_bulk_updates_sb.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         else:
             st.info("No SB bulk upload")
-
     with primary3:
         if not sd_bulk_updates.empty:
-            st.download_button(
-                label="Download SD Bulk Upload",
-                data=to_excel_bytes(sd_bulk_updates),
-                file_name="amazon_bulk_updates_sd.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_bulk_upload_sd_xlsx",
-                use_container_width=True,
-            )
+            st.download_button("Download SD Bulk Upload", data=to_excel_bytes(sd_bulk_updates), file_name="amazon_bulk_updates_sd.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         else:
             st.info("No SD bulk upload")
 
@@ -1379,67 +1494,23 @@ if "last_outputs" in st.session_state:
     with st.expander("Optional Downloads", expanded=False):
         opt1, opt2 = st.columns(2)
         opt3, opt4 = st.columns(2)
-
         with opt1:
-            st.download_button(
-                label="Download Bid Recommendations",
-                data=to_excel_bytes(bid_recommendations),
-                file_name="bid_recommendations.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_bid_recommendations_xlsx",
-                use_container_width=True,
-            )
-
+            st.download_button("Download Bid Recommendations", data=to_excel_bytes(bid_recommendations), file_name="bid_recommendations.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         with opt2:
-            st.download_button(
-                label="Download Search Term Actions",
-                data=to_excel_bytes(search_term_actions),
-                file_name="search_term_actions.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_search_term_actions_xlsx",
-                use_container_width=True,
-            )
-
+            st.download_button("Download Search Term Actions", data=to_excel_bytes(search_term_actions), file_name="search_term_actions.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         with opt3:
-            st.download_button(
-                label="Download Campaign Budget Actions",
-                data=to_excel_bytes(campaign_budget_actions),
-                file_name="campaign_budget_actions.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_campaign_budget_actions_xlsx",
-                use_container_width=True,
-            )
-
+            st.download_button("Download Campaign Budget Actions", data=to_excel_bytes(campaign_budget_actions), file_name="campaign_budget_actions.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         with opt4:
             if not execution_summary.empty:
-                st.download_button(
-                    label="Download Execution Summary",
-                    data=to_excel_bytes(execution_summary),
-                    file_name="execution_summary.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_execution_summary_xlsx",
-                    use_container_width=True,
-                )
+                st.download_button("Download Execution Summary", data=to_excel_bytes(execution_summary), file_name="execution_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
+        if not output_top_opportunities.empty:
+            st.download_button("Download Top Opportunities", data=to_excel_bytes(output_top_opportunities), file_name="top_opportunities.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         if not output_sqp_opportunities.empty:
-            st.download_button(
-                label="Download SQP Opportunities",
-                data=to_excel_bytes(output_sqp_opportunities),
-                file_name="sqp_opportunities.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_sqp_opportunities_xlsx",
-                use_container_width=True,
-            )
-
+            st.download_button("Download SQP Opportunities", data=to_excel_bytes(output_sqp_opportunities), file_name="sqp_opportunities.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         if not ai_override_log_df.empty:
-            st.download_button(
-                label="Download AI Override Log",
-                data=to_excel_bytes(ai_override_log_df),
-                file_name="ai_override_log.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_ai_override_log_xlsx",
-                use_container_width=True,
-            )
+            st.download_button("Download AI Override Log", data=to_excel_bytes(ai_override_log_df), file_name="ai_override_log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
     with st.expander("Run History", expanded=False):
         if not run_history.empty and "timestamp" in run_history.columns:
             display_df(run_history.sort_values(by="timestamp", ascending=False), height=320)
