@@ -2567,15 +2567,14 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
     def _backfill_action_ids(self, action_df, standard_sheet=None, multi_sheet=None):
         if action_df is None or action_df.empty:
             return pd.DataFrame()
-    
+
         lookup_frames = []
-    
+
         for sheet_df in [standard_sheet, multi_sheet]:
             if sheet_df is None or sheet_df.empty:
                 continue
-    
+
             work = sheet_df.copy()
-    
             lookup = pd.DataFrame({
                 'campaign_name_key': self.normalize_join_text(
                     self.clean_text(work.get('Campaign Name', work.get('Campaign Name (Informational only)', pd.Series('', index=work.index))))
@@ -2586,53 +2585,45 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
                 'bulk_campaign_id': self.clean_text(work.get('Campaign ID', pd.Series('', index=work.index))),
                 'bulk_ad_group_id': self.clean_text(work.get('Ad Group ID', pd.Series('', index=work.index))),
             })
-    
             lookup = lookup[
-                (lookup['campaign_name_key'] != '') &
-                (lookup['ad_group_name_key'] != '') &
-                (lookup['bulk_campaign_id'] != '') &
-                (lookup['bulk_ad_group_id'] != '')
+                (lookup['campaign_name_key'] != '')
+                & (lookup['ad_group_name_key'] != '')
+                & (lookup['bulk_campaign_id'] != '')
+                & (lookup['bulk_ad_group_id'] != '')
             ]
-    
             if not lookup.empty:
                 lookup_frames.append(
-                    lookup.drop_duplicates(
-                        subset=['campaign_name_key', 'ad_group_name_key'],
-                        keep='first'
-                    )
+                    lookup.drop_duplicates(subset=['campaign_name_key', 'ad_group_name_key'], keep='first')
                 )
-    
+
         if not lookup_frames:
             return action_df.copy()
-    
+
         lookup_df = safe_concat_frames(lookup_frames, ignore_index=True)
         if lookup_df.empty:
             return action_df.copy()
-    
+
         out = action_df.copy()
         out['campaign_name_key'] = self.normalize_join_text(out['campaign_name'])
         out['ad_group_name_key'] = self.normalize_join_text(out['ad_group_name'])
-    
-        out = out.merge(
-            lookup_df,
-            on=['campaign_name_key', 'ad_group_name_key'],
-            how='left'
-        )
-    
+        out = out.merge(lookup_df, on=['campaign_name_key', 'ad_group_name_key'], how='left')
+
         out['campaign_id'] = np.where(
             out['campaign_id'].fillna('').astype(str).str.strip() != '',
             out['campaign_id'],
             out['bulk_campaign_id'].fillna('')
         )
-    
         out['ad_group_id'] = np.where(
             out['ad_group_id'].fillna('').astype(str).str.strip() != '',
             out['ad_group_id'],
             out['bulk_ad_group_id'].fillna('')
         )
-    
-        return out.drop(columns=[c for c in ['campaign_name_key', 'ad_group_name_key', 'bulk_campaign_id', 'bulk_ad_group_id'] if c in out.columns])
-    
+
+        return out.drop(columns=[
+            c for c in ['campaign_name_key', 'ad_group_name_key', 'bulk_campaign_id', 'bulk_ad_group_id']
+            if c in out.columns
+        ])
+
     def _build_search_term_actions(self, perf_df, existing_state):
         if perf_df is None or perf_df.empty:
             return pd.DataFrame()
@@ -3019,6 +3010,12 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         if actionable.empty:
             return pd.DataFrame()
 
+        actionable = self._backfill_action_ids(
+            actionable,
+            standard_sheet=standard_sheet,
+            multi_sheet=multi_sheet,
+        )
+
         actionable['normalized_term'] = actionable['search_term'].apply(self._normalize_term)
         actionable = actionable[actionable['normalized_term'].apply(self._is_valid_harvest_term)]
         actionable = actionable[
@@ -3028,14 +3025,15 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         if actionable.empty:
             return pd.DataFrame()
 
-        actionable = self._backfill_action_ids(
-            actionable,
-            standard_sheet=standard_sheet,
-            multi_sheet=multi_sheet
-        )
-
         actionable['campaign_id'] = actionable['campaign_id'].fillna('').astype(str).str.strip()
         actionable['ad_group_id'] = actionable['ad_group_id'].fillna('').astype(str).str.strip()
+        actionable = actionable[
+            (actionable['campaign_id'] != '')
+            & (actionable['ad_group_id'] != '')
+        ]
+        if actionable.empty:
+            return pd.DataFrame()
+
         actionable = actionable.drop_duplicates(
             subset=['campaign_name', 'ad_group_name', 'normalized_term'],
             keep='first'
@@ -3067,52 +3065,38 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
         actionable = search_term_actions_df[
             search_term_actions_df['search_term_action'] == 'ADD_NEGATIVE_PHRASE'
         ].copy()
-    
+
         if actionable.empty:
             return pd.DataFrame()
-    
+
         actionable = self._backfill_action_ids(
             actionable,
             standard_sheet=standard_sheet,
-            multi_sheet=multi_sheet
+            multi_sheet=multi_sheet,
         )
-    
+
         actionable['normalized_term'] = actionable['search_term'].apply(self._normalize_term)
         actionable = actionable[actionable['normalized_term'].apply(self._is_valid_harvest_term)]
         actionable = actionable[
-            (actionable['campaign_name'].fillna('').astype(str).str.strip() != '') &
-            (actionable['ad_group_name'].fillna('').astype(str).str.strip() != '')
+            (actionable['campaign_name'].fillna('').astype(str).str.strip() != '')
+            & (actionable['ad_group_name'].fillna('').astype(str).str.strip() != '')
         ]
-    
-        actionable['campaign_id'] = actionable['campaign_id'].fillna('').astype(str).str.strip()
-        actionable['ad_group_id'] = actionable['ad_group_id'].fillna('').astype(str).str.strip()
-    
-        # CRITICAL: only keep rows that now have parent IDs
-        actionable = actionable[
-            (actionable['campaign_id'] != '') &
-            (actionable['ad_group_id'] != '')
-        ]
+        if actionable.empty:
+            return pd.DataFrame()
 
         actionable['campaign_id'] = actionable['campaign_id'].fillna('').astype(str).str.strip()
         actionable['ad_group_id'] = actionable['ad_group_id'].fillna('').astype(str).str.strip()
+        actionable = actionable[
+            (actionable['campaign_id'] != '')
+            & (actionable['ad_group_id'] != '')
+        ]
+        if actionable.empty:
+            return pd.DataFrame()
+
         actionable = actionable.drop_duplicates(
             subset=['campaign_name', 'ad_group_name', 'normalized_term'],
             keep='first'
         )
-
-        if actionable.empty:
-            return pd.DataFrame()
-
-        actionable['campaign_id'] = actionable['campaign_id'].fillna('').astype(str).str.strip()
-        actionable['ad_group_id'] = actionable['ad_group_id'].fillna('').astype(str).str.strip()
-    
-        actionable = actionable[
-            (actionable['campaign_id'] != '') &
-            (actionable['ad_group_id'] != '')
-        ]
-    
-        if actionable.empty:
-            return pd.DataFrame()
 
         bulk = pd.DataFrame(index=actionable.index)
         bulk['Product'] = 'Sponsored Brands'
@@ -3169,7 +3153,6 @@ class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
             standard_sheet=standard_sheet,
             multi_sheet=multi_sheet,
         )
-        
         negative_bulk_updates = self._generate_negative_bulk_updates(
             search_term_actions,
             standard_sheet=standard_sheet,
