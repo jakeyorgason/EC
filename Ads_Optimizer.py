@@ -1275,7 +1275,7 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="section-title">Upload Amazon Reports</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Phase 1 adds shared uploads, separate SP / SB / SD sections, readiness checks, and spend reconciliation before any optimization runs.</div>',
+    '<div class="section-note">Provide shared reports and SP / SB / SD reports.</div>',
     unsafe_allow_html=True,
 )
 
@@ -1434,9 +1434,9 @@ sqp_opportunities = pd.DataFrame()
 sqp_summary = {}
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-st.markdown('<div class="section-title">Phase 1 Validation</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Optimizer Readiness Validation</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-note">Validate the upload set first. In Phase 1, the optimizer executes Sponsored Products only, while Sponsored Brands and Sponsored Display are validated and reconciled for future phases.</div>',
+    '<div class="section-note">Validates the readiness of the three different ad optimization types..</div>',
     unsafe_allow_html=True,
 )
 
