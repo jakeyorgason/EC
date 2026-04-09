@@ -725,7 +725,7 @@ with st.sidebar:
 - Adjusts campaign daily budgets
 - Optionally enforces TACOS and monthly pacing guardrails
 - Optionally uses prior-month SQP Simple View for keyword opportunity context
-- Supports explainability, confidence scoring, simulation reporting, and optional margin-aware bidding
+- Supports explainability, confidence scoring, simulation reporting, and Amazon-only business-aware optimization
 """
     )
     st.markdown("---")
@@ -750,9 +750,8 @@ Sponsored Display
     st.markdown("## Optional uploads")
     st.markdown(
         """
-- Sales and Traffic Business Report for TACOS control
+- Sales and Traffic Business Report for TACOS control and Amazon-only business-aware optimization
 - Search Query Performance Report (Simple View, prior month only)
-- Margin report CSV for margin-aware bidding
 """
     )
     st.markdown("---")
@@ -783,7 +782,7 @@ with header_right:
         <div class="brand-shell">
             <div class="brand-title">Evolved Commerce<br>Amazon Ads Command Center</div>
             <div class="brand-subtitle">
-                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • SQP context • AI review • Explainability
+                Bid optimization • Search harvesting • Negative mining • Budget pacing • TACOS control • SQP context • AI review • Explainability • Amazon-only business context
             </div>
         </div>
         """,
@@ -792,7 +791,7 @@ with header_right:
 
 render_info_banner(
     "Upgraded app layer",
-    "This version is cleaned up to match the upgraded ingestion engine: confidence scoring, explainability, simulation reporting, top opportunities, and optional margin-aware bidding support.",
+    "This version is cleaned up to match the upgraded ingestion engine: confidence scoring, explainability, simulation reporting, top opportunities, and Amazon-only business-aware optimization using Ads Manager plus Seller Central data.",
     tone="brand",
 )
 
@@ -887,7 +886,7 @@ else:
 # =========================================================
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-title">Upload Amazon Reports</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-note">Provide shared reports plus SP / SB / SD report files. Optional margin data can be added for smarter ROAS thresholds.</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-note">Provide shared reports plus SP / SB / SD report files. This version uses only Amazon Ads Manager and Seller Central data sources.</div>', unsafe_allow_html=True)
 
 with st.expander("Shared Uploads", expanded=True):
     su1, su2 = st.columns(2)
@@ -895,14 +894,11 @@ with st.expander("Shared Uploads", expanded=True):
         bulk_file = st.file_uploader("Bulk Sheet", type=["xlsx"], key="bulk")
         upload_status_line(bulk_file, "Bulk Sheet uploaded")
     with su2:
-        business_file = st.file_uploader("Sales and Traffic Business Report (optional)", type=["xlsx", "csv"], key="business")
+        business_file = st.file_uploader("Sales and Traffic Business Report (optional — used for TACOS and Amazon-only business-aware optimization)", type=["xlsx", "csv"], key="business")
         upload_status_line(business_file, "Business report uploaded")
     sqp_file = st.file_uploader("Search Query Performance Report (optional — prior month, Simple View only)", type=["csv"], key="sqp", help="Use the prior month's SQP report in Simple View only.")
     upload_status_line(sqp_file, "SQP report uploaded")
 
-with st.expander("Advanced Optional Uploads", expanded=False):
-    margin_file = st.file_uploader("Margin Report (optional — CSV only)", type=["csv"], key="margin", help="Optional file for margin-aware bidding. If omitted, the engine safely ignores margin logic.")
-    upload_status_line(margin_file, "Margin report uploaded")
 
 with st.expander("Sponsored Products Uploads", expanded=True):
     sp1, sp2, sp3 = st.columns(3)
@@ -932,7 +928,6 @@ with st.expander("Sponsored Display Uploads", expanded=False):
 bulk_bytes = get_uploaded_bytes(bulk_file)
 business_bytes = get_uploaded_bytes(business_file)
 sqp_bytes = get_uploaded_bytes(sqp_file)
-margin_bytes = get_uploaded_bytes(margin_file)
 sp_search_bytes = get_uploaded_bytes(sp_search_file)
 sp_targeting_bytes = get_uploaded_bytes(sp_targeting_file)
 sp_impression_bytes = get_uploaded_bytes(sp_impression_file)
@@ -946,7 +941,6 @@ def build_engine() -> Phase2AdsOrchestrator:
         bulk_file=bytes_to_buffer(bulk_bytes),
         business_report_file=bytes_to_buffer(business_bytes),
         sqp_report_file=bytes_to_buffer(sqp_bytes),
-        margin_report_file=bytes_to_buffer(margin_bytes),
         sp_search_term_file=bytes_to_buffer(sp_search_bytes),
         sp_targeting_file=bytes_to_buffer(sp_targeting_bytes),
         sp_impression_share_file=bytes_to_buffer(sp_impression_bytes),
