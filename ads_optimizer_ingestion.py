@@ -3992,18 +3992,27 @@ class Phase2AdsOrchestrator:
         business_file = self.kwargs.get('business_report_file')
         if business_file is None:
             return None
-
+    
+        original_name = getattr(business_file, 'name', '') if not isinstance(business_file, (str, os.PathLike)) else str(business_file)
+        ext = os.path.splitext(original_name)[1].lower()
+    
         cloned = self._clone_file_obj(business_file)
-        name = getattr(cloned, 'name', '') if not isinstance(cloned, (str, os.PathLike)) else str(cloned)
-        ext = os.path.splitext(name)[1].lower()
-
+    
         if ext == '.csv':
             df = pd.read_csv(cloned)
-        else:
+        elif ext in ['.xlsx', '.xls']:
             df = pd.read_excel(cloned, engine='openpyxl')
-
+        else:
+            # fallback: try csv first, then excel
+            try:
+                cloned.seek(0)
+                df = pd.read_csv(cloned)
+            except Exception:
+                cloned.seek(0)
+                df = pd.read_excel(cloned, engine='openpyxl')
+    
         df.columns = [str(c).strip() for c in df.columns]
-
+    
         def _clean_money(series):
             return pd.to_numeric(
                 series.astype(str)
@@ -4012,16 +4021,16 @@ class Phase2AdsOrchestrator:
                 .str.replace("(", "-", regex=False)
                 .str.replace(")", "", regex=False)
                 .str.strip(),
-                errors='coerce',
+                errors="coerce",
             ).fillna(0)
-
+    
         exact_ordered_cols = [
             c for c in df.columns
             if str(c).strip().lower() == "ordered product sales"
         ]
         if exact_ordered_cols:
             return round(sum(float(_clean_money(df[col]).sum()) for col in exact_ordered_cols), 2)
-
+    
         ordered_component_cols = [
             c for c in df.columns
             if str(c).strip().lower() in {
@@ -4031,14 +4040,14 @@ class Phase2AdsOrchestrator:
         ]
         if ordered_component_cols:
             return round(sum(float(_clean_money(df[col]).sum()) for col in ordered_component_cols), 2)
-
+    
         fallback_cols = [
             c for c in df.columns
             if str(c).strip().lower() in {"total sales", "sales"}
         ]
         if fallback_cols:
             return round(float(_clean_money(df[fallback_cols[0]]).sum()), 2)
-
+    
         return None
 
     def _sp_engine(self):
