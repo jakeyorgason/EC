@@ -3,10 +3,10 @@ import os
 import json
 import calendar
 from datetime import date
-from typing import Any, Optional
+from typing import Optional, Any
 
 import pandas as pd
-import streamlit as stn
+import streamlit as st
 from openai import OpenAI
 
 from ads_optimizer_ingestion import Phase2UploadValidator, Phase2AdsOrchestrator
