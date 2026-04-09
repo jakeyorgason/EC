@@ -132,6 +132,8 @@ def apply_cross_type_bulk_safeguards(df):
 # =========================================================
 # Advanced optimization helpers
 # =========================================================
+AMAZON_ONLY_MODE = True
+
 BRAND_CLASSIFICATION_HINTS = [
     "brand", "branded", "defense", "defend", "hero", "catalog", "store", "video"
 ]
@@ -216,7 +218,7 @@ class Phase1UploadValidator:
         self.bulk_file = bulk_file
         self.business_report_file = business_report_file
         self.sqp_report_file = sqp_report_file
-        self.margin_report_file = margin_report_file
+        self.margin_report_file = margin_report_file  # deprecated for Amazon-only mode
         self.sp_search_term_file = sp_search_term_file
         self.sp_targeting_file = sp_targeting_file
         self.sp_impression_share_file = sp_impression_share_file
@@ -713,34 +715,9 @@ class AdsOptimizerEngine:
 
 
     def extract_margin_lookup(self):
-        candidate_df = None
-        if getattr(self, "margin_df", None) is not None and not self.margin_df.empty:
-            candidate_df = self.margin_df.copy()
-        elif self.business_df is not None and not self.business_df.empty:
-            candidate_df = self.business_df.copy()
-
-        if candidate_df is None or candidate_df.empty:
-            self.margin_lookup = {}
-            return {}
-
-        sku_col = self.get_optional_column(candidate_df, ["Child ASIN", "ASIN", "SKU", "Seller SKU"])
-        margin_col = self.get_optional_column(candidate_df, ["Margin %", "Margin", "Contribution Margin %", "Gross Margin %"])
-        if sku_col is None or margin_col is None:
-            self.margin_lookup = {}
-            return {}
-
-        work = pd.DataFrame({
-            "sku_key": self.clean_text(candidate_df[sku_col]).str.lower().str.strip(),
-            "margin_pct": self.clean_percent_series(candidate_df[margin_col]),
-        })
-        work = work[work["sku_key"] != ""]
-        if work.empty:
-            self.margin_lookup = {}
-            return {}
-
-        grouped = work.groupby("sku_key", as_index=False)["margin_pct"].mean()
-        self.margin_lookup = dict(zip(grouped["sku_key"], grouped["margin_pct"]))
-        return self.margin_lookup
+        """Deprecated in Amazon-only mode. Margin inputs are ignored."""
+        self.margin_lookup = {}
+        return {}
 
     def detect_brand_segment(self, term, campaign_name=""):
         return classify_brand_segment(term, campaign_name)
@@ -749,17 +726,8 @@ class AdsOptimizerEngine:
         return classify_match_funnel(match_type, campaign_name, ad_group_name)
 
     def adjust_roas_for_margin(self, base_roas, margin_pct):
-        roas = float(base_roas or 0)
-        if margin_pct is None or pd.isna(margin_pct) or float(margin_pct) <= 0:
-            return roas
-        margin_pct = float(margin_pct)
-        if margin_pct < 20:
-            return roas * 0.80
-        if margin_pct < 30:
-            return roas * 0.90
-        if margin_pct > 55:
-            return roas * 1.10
-        return roas
+        """Deprecated in Amazon-only mode. Returns the original ROAS unchanged."""
+        return float(base_roas or 0)
 
     def get_history_signature(self, row, level="target"):
         campaign = normalize_key(row.get("campaign_name", ""))
@@ -1409,11 +1377,7 @@ class AdsOptimizerEngine:
             if self.business_report_file is not None
             else None
         )
-        self.margin_df = (
-            self.load_file(self.margin_report_file, expected_ext=".csv")
-            if self.margin_report_file is not None
-            else None
-        )
+        self.margin_df = None
         self.sqp_df = self.load_sqp_simple_view() if self.sqp_report_file is not None else None
         self.extract_margin_lookup()
 
@@ -1778,13 +1742,7 @@ class AdsOptimizerEngine:
             status = "tacos_constrained"
             adjusted_min_roas = max(adjusted_min_roas, self.min_roas * 1.15)
 
-        margin_guardrail = None
-        if self.margin_lookup:
-            avg_margin = float(np.mean(list(self.margin_lookup.values()))) if self.margin_lookup else 0.0
-            if avg_margin > 0:
-                margin_guardrail = round(avg_margin, 2)
-                if avg_margin < 25:
-                    adjusted_min_roas = max(adjusted_min_roas, self.min_roas * 1.10)
+        commercial_efficiency_mode = bool(self.business_df is not None)
 
         return {
             "account_roas": round(account_roas, 2),
@@ -1794,7 +1752,7 @@ class AdsOptimizerEngine:
             "adjusted_min_roas": round(adjusted_min_roas, 2),
             "tacos_pct": round(tacos * 100, 2) if tacos is not None else None,
             "tacos_status": tacos_status,
-            "margin_guardrail_pct": margin_guardrail,
+            "commercial_efficiency_mode": commercial_efficiency_mode,
         }
 
     # -----------------------------
@@ -1920,8 +1878,6 @@ class AdsOptimizerEngine:
         )
 
         recs["current_bid"] = recs["current_bid"].fillna(0)
-        recs["margin_pct"] = np.nan
-        recs["adjusted_roas"] = recs.apply(lambda r: self.adjust_roas_for_margin(r.get("roas", 0), r.get("margin_pct")), axis=1)
 
         actions = []
         recommended_bids = []
@@ -3935,7 +3891,6 @@ class Phase2AdsOrchestrator:
             impression_share_file=self.kwargs['sp_impression_share_file'],
             business_report_file=self.kwargs['business_report_file'],
             sqp_report_file=self.kwargs['sqp_report_file'],
-            margin_report_file=self.kwargs.get('margin_report_file'),
             min_roas=self.kwargs['min_roas'],
             min_clicks=self.kwargs['min_clicks'],
             zero_order_click_threshold=self.kwargs['zero_order_click_threshold'],
