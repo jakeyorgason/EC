@@ -473,6 +473,8 @@ class AdsOptimizerEngine:
         cooldown_days=7,
         budget_reallocation_pct=0.15,
         enable_placement_weighting=True,
+        external_total_ad_spend=None,
+        tacos_constrained_override=False,
     ):
         self.bulk_file = bulk_file
         self.search_term_file = search_term_file
@@ -505,6 +507,13 @@ class AdsOptimizerEngine:
         self.cooldown_days = int(cooldown_days)
         self.budget_reallocation_pct = float(budget_reallocation_pct)
         self.enable_placement_weighting = bool(enable_placement_weighting)
+        self.external_total_ad_spend = (
+            float(external_total_ad_spend)
+            if external_total_ad_spend not in [None, ""]
+            else None
+        )
+        self.tacos_constrained_override = bool(tacos_constrained_override)
+        self.tacos_constrained = False
 
         self.existing_any_keywords = set()
         self.existing_negative_keywords = set()
@@ -1678,23 +1687,13 @@ class AdsOptimizerEngine:
     # BUSINESS REPORT / TACOS
     # -----------------------------
     def build_business_sales_total(self):
-        """
-        Build total business sales for TACOS using Seller Central Business Report data.
-    
-        Priority:
-        1. Sum Ordered Product Sales columns
-        2. If unavailable, fall back to B2C + B2B ordered product sales
-        3. Only then fall back to Total Sales / Sales
-    
-        This is intentionally stricter so TACOS is based on actual ordered product sales,
-        not a broader sales field when avoidable.
-        """
+        """Build total business sales for TACOS using Seller Central Business Report data."""
         if self.business_df is None or not self.enable_tacos_control:
             return None
-    
+
         df = self.business_df.copy()
         df.columns = [str(c).strip() for c in df.columns]
-    
+
         def _clean_money(series):
             return pd.to_numeric(
                 series.astype(str)
@@ -1705,20 +1704,15 @@ class AdsOptimizerEngine:
                 .str.strip(),
                 errors="coerce",
             ).fillna(0)
-    
-        # 1) Exact Ordered Product Sales column
+
         exact_ordered_cols = [
             c for c in df.columns
             if str(c).strip().lower() == "ordered product sales"
         ]
-    
         if exact_ordered_cols:
-            total_sales = 0.0
-            for col in exact_ordered_cols:
-                total_sales += float(_clean_money(df[col]).sum())
+            total_sales = sum(float(_clean_money(df[col]).sum()) for col in exact_ordered_cols)
             return round(total_sales, 2)
-    
-        # 2) B2C / B2B ordered product sales columns
+
         ordered_component_cols = [
             c for c in df.columns
             if str(c).strip().lower() in {
@@ -1726,23 +1720,17 @@ class AdsOptimizerEngine:
                 "ordered product sales - b2b",
             }
         ]
-    
         if ordered_component_cols:
-            total_sales = 0.0
-            for col in ordered_component_cols:
-                total_sales += float(_clean_money(df[col]).sum())
+            total_sales = sum(float(_clean_money(df[col]).sum()) for col in ordered_component_cols)
             return round(total_sales, 2)
-    
-        # 3) Fallback only if ordered product sales is not available
+
         fallback_cols = [
             c for c in df.columns
             if str(c).strip().lower() in {"total sales", "sales"}
         ]
-    
         if fallback_cols:
-            total_sales = float(_clean_money(df[fallback_cols[0]]).sum())
-            return round(total_sales, 2)
-    
+            return round(float(_clean_money(df[fallback_cols[0]]).sum()), 2)
+
         return None
 
     # -----------------------------
@@ -1751,19 +1739,25 @@ class AdsOptimizerEngine:
     def build_account_health(self, targeting_with_share_df):
         df = targeting_with_share_df.copy()
 
-        total_spend = df["spend"].sum()
+        channel_spend = df["spend"].sum()
         total_sales = df["sales"].sum()
 
-        account_roas = total_sales / total_spend if total_spend > 0 else 0
+        account_roas = total_sales / channel_spend if channel_spend > 0 else 0
         waste_spend = df.loc[df["orders"] == 0, "spend"].sum()
-        waste_spend_pct = waste_spend / total_spend if total_spend > 0 else 0
+        waste_spend_pct = waste_spend / channel_spend if channel_spend > 0 else 0
+
+        effective_total_ad_spend = (
+            self.external_total_ad_spend
+            if self.external_total_ad_spend is not None and self.external_total_ad_spend > 0
+            else channel_spend
+        )
 
         business_total_sales = self.build_business_sales_total()
         tacos = None
         tacos_status = "not_used"
 
         if business_total_sales is not None and business_total_sales > 0:
-            tacos = total_spend / business_total_sales
+            tacos = effective_total_ad_spend / business_total_sales
             tacos_status = "within_target" if tacos <= self.max_tacos_target else "above_target"
 
         status = "healthy"
@@ -1776,10 +1770,12 @@ class AdsOptimizerEngine:
             status = "above_target"
             adjusted_min_roas = self.min_roas * 0.95
 
-        if tacos is not None and tacos > self.max_tacos_target:
+        if self.tacos_constrained_override or (tacos is not None and tacos > self.max_tacos_target):
             status = "tacos_constrained"
+            tacos_status = "above_target"
             adjusted_min_roas = max(adjusted_min_roas, self.min_roas * 1.15)
 
+        self.tacos_constrained = tacos_status == "above_target"
         commercial_efficiency_mode = bool(self.business_df is not None)
 
         return {
@@ -1791,6 +1787,9 @@ class AdsOptimizerEngine:
             "tacos_pct": round(tacos * 100, 2) if tacos is not None else None,
             "tacos_status": tacos_status,
             "commercial_efficiency_mode": commercial_efficiency_mode,
+            "channel_spend": round(channel_spend, 2),
+            "effective_total_ad_spend": round(effective_total_ad_spend, 2),
+            "business_total_sales": round(business_total_sales, 2) if business_total_sales is not None else None,
         }
 
     # -----------------------------
@@ -2510,6 +2509,7 @@ class _Phase2BaseOptimizer:
         enable_budget_updates=True,
         max_bid_cap=5.0,
         max_budget_cap=500.0,
+        tacos_constrained=False,
     ):
         self.bulk_file = bulk_file
         self.min_roas = float(min_roas)
@@ -2523,6 +2523,7 @@ class _Phase2BaseOptimizer:
         self.enable_budget_updates = enable_budget_updates
         self.max_bid_cap = float(max_bid_cap)
         self.max_budget_cap = float(max_budget_cap)
+        self.tacos_constrained = bool(tacos_constrained)
         self.apply_strategy_settings()
 
     def apply_strategy_settings(self):
@@ -2622,7 +2623,11 @@ class _Phase2BaseOptimizer:
         )
 
     def _budget_action(self, roas, orders):
-        if orders >= self.min_orders_for_scaling and roas >= self.min_roas * self.scale_roas_multiplier:
+        if (
+            not self.tacos_constrained
+            and orders >= self.min_orders_for_scaling
+            and roas >= self.min_roas * self.scale_roas_multiplier
+        ):
             return 'INCREASE_BUDGET'
         if roas > 0 and roas < self.min_roas:
             return 'DECREASE_BUDGET'
@@ -2634,7 +2639,11 @@ class _Phase2BaseOptimizer:
                 return 'DECREASE_BID'
         if clicks >= self.min_clicks and roas > 0 and roas < self.min_roas:
             return 'DECREASE_BID'
-        if orders >= self.min_orders_for_scaling and roas >= self.min_roas * self.scale_roas_multiplier:
+        if (
+            not self.tacos_constrained
+            and orders >= self.min_orders_for_scaling
+            and roas >= self.min_roas * self.scale_roas_multiplier
+        ):
             return 'INCREASE_BID'
         return None
 
@@ -3917,9 +3926,120 @@ class Phase2AdsOrchestrator:
         pacing_buffer_pct=5.0,
         max_bid_cap=5.0,
         max_budget_cap=500.0,
+        tacos_constrained=False,
     ):
         self.kwargs = locals().copy()
         self.kwargs.pop('self')
+
+        self.global_spend_summary = self._compute_global_spend_summary()
+        self.global_total_ad_spend = float(self.global_spend_summary.get('total_spend', 0) or 0)
+        self.global_business_total_sales = self._compute_business_total_sales()
+
+        self.global_tacos_pct = None
+        self.global_tacos_constrained = False
+
+        if (
+            self.kwargs.get('enable_tacos_control')
+            and self.global_business_total_sales is not None
+            and self.global_business_total_sales > 0
+        ):
+            self.global_tacos_pct = round((self.global_total_ad_spend / self.global_business_total_sales) * 100, 2)
+            self.global_tacos_constrained = self.global_tacos_pct > float(self.kwargs.get('max_tacos_target', 15.0))
+
+    def _clone_file_obj(self, file_obj):
+        if file_obj is None:
+            return None
+        if isinstance(file_obj, (str, bytes, os.PathLike)):
+            return file_obj
+        if isinstance(file_obj, io.BytesIO):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'getvalue'):
+            return io.BytesIO(file_obj.getvalue())
+        if hasattr(file_obj, 'read'):
+            try:
+                pos = file_obj.tell()
+            except Exception:
+                pos = None
+            try:
+                if hasattr(file_obj, 'seek'):
+                    file_obj.seek(0)
+                data = file_obj.read()
+            finally:
+                try:
+                    if pos is not None and hasattr(file_obj, 'seek'):
+                        file_obj.seek(pos)
+                except Exception:
+                    pass
+            return io.BytesIO(data)
+        raise ValueError("Unsupported file object type.")
+
+    def _compute_global_spend_summary(self):
+        validator = Phase2UploadValidator(
+            bulk_file=self.kwargs['bulk_file'],
+            business_report_file=self.kwargs['business_report_file'],
+            sqp_report_file=self.kwargs['sqp_report_file'],
+            sp_search_term_file=self.kwargs['sp_search_term_file'],
+            sp_targeting_file=self.kwargs['sp_targeting_file'],
+            sp_impression_share_file=self.kwargs['sp_impression_share_file'],
+            sb_search_term_file=self.kwargs['sb_search_term_file'],
+            sb_impression_share_file=self.kwargs['sb_impression_share_file'],
+            sd_targeting_file=self.kwargs['sd_targeting_file'],
+        )
+        analysis = validator.analyze()
+        return analysis.get('spend_summary', {}) if isinstance(analysis, dict) else {}
+
+    def _compute_business_total_sales(self):
+        business_file = self.kwargs.get('business_report_file')
+        if business_file is None:
+            return None
+
+        cloned = self._clone_file_obj(business_file)
+        name = getattr(cloned, 'name', '') if not isinstance(cloned, (str, os.PathLike)) else str(cloned)
+        ext = os.path.splitext(name)[1].lower()
+
+        if ext == '.csv':
+            df = pd.read_csv(cloned)
+        else:
+            df = pd.read_excel(cloned, engine='openpyxl')
+
+        df.columns = [str(c).strip() for c in df.columns]
+
+        def _clean_money(series):
+            return pd.to_numeric(
+                series.astype(str)
+                .str.replace("$", "", regex=False)
+                .str.replace(",", "", regex=False)
+                .str.replace("(", "-", regex=False)
+                .str.replace(")", "", regex=False)
+                .str.strip(),
+                errors='coerce',
+            ).fillna(0)
+
+        exact_ordered_cols = [
+            c for c in df.columns
+            if str(c).strip().lower() == "ordered product sales"
+        ]
+        if exact_ordered_cols:
+            return round(sum(float(_clean_money(df[col]).sum()) for col in exact_ordered_cols), 2)
+
+        ordered_component_cols = [
+            c for c in df.columns
+            if str(c).strip().lower() in {
+                "ordered product sales - b2c",
+                "ordered product sales - b2b",
+            }
+        ]
+        if ordered_component_cols:
+            return round(sum(float(_clean_money(df[col]).sum()) for col in ordered_component_cols), 2)
+
+        fallback_cols = [
+            c for c in df.columns
+            if str(c).strip().lower() in {"total sales", "sales"}
+        ]
+        if fallback_cols:
+            return round(float(_clean_money(df[fallback_cols[0]]).sum()), 2)
+
+        return None
 
     def _sp_engine(self):
         return AdsOptimizerEngine(
@@ -3946,6 +4066,8 @@ class Phase2AdsOrchestrator:
             pacing_buffer_pct=self.kwargs['pacing_buffer_pct'],
             max_bid_cap=self.kwargs['max_bid_cap'],
             max_budget_cap=self.kwargs['max_budget_cap'],
+            external_total_ad_spend=self.global_total_ad_spend,
+            tacos_constrained_override=self.global_tacos_constrained,
         )
 
     def _sb_engine(self):
@@ -3964,6 +4086,7 @@ class Phase2AdsOrchestrator:
             enable_budget_updates=self.kwargs['enable_budget_updates'],
             max_bid_cap=self.kwargs['max_bid_cap'],
             max_budget_cap=self.kwargs['max_budget_cap'],
+            tacos_constrained=self.global_tacos_constrained,
         )
 
     def _sd_engine(self):
@@ -3979,6 +4102,7 @@ class Phase2AdsOrchestrator:
             enable_budget_updates=self.kwargs['enable_budget_updates'],
             max_bid_cap=self.kwargs['max_bid_cap'],
             max_budget_cap=self.kwargs['max_budget_cap'],
+            tacos_constrained=self.global_tacos_constrained,
         )
 
     def analyze(self):
