@@ -2,6 +2,7 @@ import io
 import os
 import json
 import calendar
+import inspect
 from datetime import date
 from typing import Any, Optional
 
@@ -40,6 +41,9 @@ BULK_EXPORT_COLUMNS = [
     "Daily Budget",
     "Optimizer Action",
 ]
+
+
+APP_VERSION = "2.1"
 
 
 def safe_dict(value: Any) -> dict:
@@ -91,25 +95,68 @@ def first_present_key(data: dict, keys: list[str], default=None):
     return default
 
 
+def parse_brand_terms(raw_text: str) -> list[str]:
+    parts = []
+    for chunk in str(raw_text or "").replace("\n", ",").split(","):
+        term = " ".join(chunk.strip().split())
+        if term:
+            parts.append(term)
+    deduped = []
+    seen = set()
+    for term in parts:
+        key = term.lower()
+        if key not in seen:
+            deduped.append(term)
+            seen.add(key)
+    return deduped
+
+
+def supported_orchestrator_params() -> set[str]:
+    try:
+        return set(inspect.signature(Phase2AdsOrchestrator.__init__).parameters.keys())
+    except Exception:
+        return set()
+
+
+def orchestrator_supports(param_name: str) -> bool:
+    return param_name in supported_orchestrator_params()
+
+
+def filter_engine_kwargs(kwargs: dict) -> dict:
+    supported = supported_orchestrator_params()
+    return {k: v for k, v in kwargs.items() if k in supported}
+
+
+def build_preferred_columns(df: pd.DataFrame, preferred: list[str]) -> list[str]:
+    if df is None or df.empty:
+        return []
+    cols = [c for c in preferred if c in df.columns]
+    extras = [c for c in df.columns if c not in cols][:10]
+    return cols + extras
+
+
 def display_df(df: pd.DataFrame, preferred: Optional[list[str]] = None, height: int = 460) -> None:
     if df is None or df.empty:
         st.info("No data available.")
         return
+    out = df.copy()
     if preferred:
-        cols = [c for c in preferred if c in df.columns]
-        extras = [c for c in df.columns if c not in cols][:8]
-        df = df[cols + extras]
-    st.dataframe(df, use_container_width=True, height=height)
+        cols = build_preferred_columns(out, preferred)
+        if cols:
+            out = out[cols]
+    st.dataframe(out, use_container_width=True, height=height)
 
 
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    export_df = df.copy()
+    export_df = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    if export_df.empty:
+        export_df = pd.DataFrame({"Message": ["No rows available"]})
     export_df.columns = [str(c).strip() for c in export_df.columns]
 
     if "Product" in export_df.columns:
         keep_cols = [c for c in BULK_EXPORT_COLUMNS if c in export_df.columns]
-        if keep_cols:
-            export_df = export_df[keep_cols].copy()
+        trailing = [c for c in export_df.columns if c not in keep_cols]
+        export_df = export_df[keep_cols + trailing].copy()
 
     export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
 
@@ -122,12 +169,12 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 def product_bulk_slice(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
     if df is None or df.empty or "Product" not in df.columns:
         return pd.DataFrame()
-
     out = df[df["Product"].astype(str).str.strip() == product_name].copy()
     out.columns = [str(c).strip() for c in out.columns]
     keep_cols = [c for c in BULK_EXPORT_COLUMNS if c in out.columns]
+    tail = [c for c in out.columns if c not in keep_cols]
     if keep_cols:
-        out = out[keep_cols].copy()
+        out = out[keep_cols + tail].copy()
     out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
     return out.reset_index(drop=True)
 
@@ -197,35 +244,23 @@ def render_readiness_block(label: str, ready_state: dict, note: str = "") -> Non
         st.caption(note)
 
 
+def render_capability_line(label: str, supported: bool) -> None:
+    st.caption(f"{'✅' if supported else '⚪'} {label}")
 
 
 def get_scaling_action_count(df: pd.DataFrame) -> int:
     if df is None or df.empty or "Optimizer Action" not in df.columns:
         return 0
-    return int(
-        df["Optimizer Action"].astype(str).str.upper().isin(["INCREASE_BID", "INCREASE_BUDGET"]).sum()
-    )
+    return int(df["Optimizer Action"].astype(str).str.upper().isin(["INCREASE_BID", "INCREASE_BUDGET"]).sum())
 
 
-def estimate_tacos_suppressed_scaling(
-    combined_bulk_updates: pd.DataFrame,
-    account_health: dict,
-    simulation_summary: dict,
-) -> dict:
+def estimate_tacos_suppressed_scaling(combined_bulk_updates: pd.DataFrame, account_health: dict, simulation_summary: dict) -> dict:
     if combined_bulk_updates is None or combined_bulk_updates.empty:
-        return {
-            "suppressed_bid_increases": 0,
-            "suppressed_budget_increases": 0,
-            "suppressed_total": 0,
-        }
+        return {"suppressed_bid_increases": 0, "suppressed_budget_increases": 0, "suppressed_total": 0}
 
     tacos_status = str(account_health.get("tacos_status", "not_used")).lower()
     if tacos_status != "above_target":
-        return {
-            "suppressed_bid_increases": 0,
-            "suppressed_budget_increases": 0,
-            "suppressed_total": 0,
-        }
+        return {"suppressed_bid_increases": 0, "suppressed_budget_increases": 0, "suppressed_total": 0}
 
     return {
         "suppressed_bid_increases": int(simulation_summary.get("bid_increases", 0) or 0),
@@ -234,13 +269,8 @@ def estimate_tacos_suppressed_scaling(
     }
 
 
-def build_conflicting_signals(
-    account_health: dict,
-    simulation_summary: dict,
-    account_summary: dict,
-) -> list[str]:
+def build_conflicting_signals(account_health: dict, simulation_summary: dict, account_summary: dict) -> list[str]:
     messages = []
-
     tacos_status = str(account_health.get("tacos_status", "not_used")).lower()
     health_status = str(account_health.get("health_status", "unknown")).lower()
     scalable = get_int(account_summary.get("campaigns_scalable"))
@@ -248,22 +278,15 @@ def build_conflicting_signals(
     budget_increases = get_int(simulation_summary.get("budget_increases"))
 
     if tacos_status == "above_target" and scalable > 0:
-        messages.append(
-            "Scaling opportunities exist, but account-wide TACOS is above target, so growth is being constrained."
-        )
-
+        messages.append("Scaling opportunities exist, but account-wide TACOS is above target, so growth is being constrained.")
     if health_status == "under_target" and (bid_increases > 0 or budget_increases > 0):
-        messages.append(
-            "Some entities still qualify for scaling, but overall account efficiency is below target, so scaling should be reviewed carefully."
-        )
-
+        messages.append("Some entities still qualify for scaling, but overall account efficiency is below target, so scaling should be reviewed carefully.")
     if scalable > 0 and bid_increases == 0 and budget_increases == 0:
-        messages.append(
-            "The account has scalable campaigns, but no scaling actions were generated. A guardrail is likely suppressing growth."
-        )
-
+        messages.append("The account has scalable campaigns, but no scaling actions were generated. A guardrail is likely suppressing growth.")
     return messages
-def build_narrative(account_health: dict, simulation_summary: dict, pacing_status: str) -> list[str]:
+
+
+def build_narrative(account_health: dict, simulation_summary: dict, pacing_status: str, feature_settings: dict) -> list[str]:
     notes = []
     health_status = account_health.get("health_status", "unknown")
     account_roas = account_health.get("account_roas", 0)
@@ -271,24 +294,16 @@ def build_narrative(account_health: dict, simulation_summary: dict, pacing_statu
     tacos_pct = account_health.get("tacos_pct", None)
 
     if health_status == "under_target":
-        notes.append(
-            f"Account ROAS is below target at {account_roas}. The optimizer tightened efficiency controls and used an adjusted ROAS threshold of {adjusted_min_roas}."
-        )
+        notes.append(f"Account ROAS is below target at {account_roas}. The optimizer tightened efficiency controls and used an adjusted ROAS threshold of {adjusted_min_roas}.")
     elif health_status == "above_target":
-        notes.append(
-            f"Account ROAS is healthy at {account_roas}. The optimizer allowed more room for controlled scaling."
-        )
+        notes.append(f"Account ROAS is healthy at {account_roas}. The optimizer allowed more room for controlled scaling.")
     elif health_status == "tacos_constrained":
         notes.append("TACOS guardrails are active. The optimizer tightened scaling behavior to protect total account efficiency.")
     else:
-        notes.append(
-            f"Account health is stable. The optimizer used a balanced rule set around the target ROAS of {adjusted_min_roas}."
-        )
+        notes.append(f"Account health is stable. The optimizer used a balanced rule set around the target ROAS of {adjusted_min_roas}.")
 
     if pacing_status == "Over Pace":
-        notes.append(
-            "Monthly pacing is currently over target. Budget increases and bid increases were suppressed to help protect the monthly spend cap."
-        )
+        notes.append("Monthly pacing is currently over target. Budget increases and bid increases were suppressed to help protect the monthly spend cap.")
     elif pacing_status == "On Pace":
         notes.append("Monthly pacing is on target. Standard optimization behavior was allowed without pacing suppression.")
 
@@ -301,13 +316,20 @@ def build_narrative(account_health: dict, simulation_summary: dict, pacing_statu
     if simulation_summary.get("negatives_added", 0) > 0:
         notes.append(f"{simulation_summary['negatives_added']} negative phrases were added to reduce wasted clicks from unproductive traffic.")
     if simulation_summary.get("budget_increases", 0) > 0 or simulation_summary.get("budget_decreases", 0) > 0:
-        notes.append(
-            f"Campaign budget actions included {simulation_summary.get('budget_increases', 0)} increases and {simulation_summary.get('budget_decreases', 0)} decreases."
-        )
+        notes.append(f"Campaign budget actions included {simulation_summary.get('budget_increases', 0)} increases and {simulation_summary.get('budget_decreases', 0)} decreases.")
     if simulation_summary.get("high_confidence_actions", 0) > 0:
-        notes.append(f"{simulation_summary.get('high_confidence_actions', 0)} actions were tagged high confidence by the upgraded scoring engine.")
+        notes.append(f"{simulation_summary.get('high_confidence_actions', 0)} actions were tagged high confidence by the scoring engine.")
     if tacos_pct is not None:
         notes.append(f"Current TACOS reading from this run is {tacos_pct}%.")
+
+    if feature_settings.get("enable_placement_weighting"):
+        notes.append("Placement optimization was enabled, so top of search, product pages, and rest of search were considered in execution where supported.")
+    if feature_settings.get("brand_terms"):
+        notes.append(f"Brand segmentation used custom brand terms: {', '.join(feature_settings['brand_terms'])}.")
+    if feature_settings.get("enable_portfolio_budget_reallocation"):
+        notes.append("Portfolio-level budget reallocation was enabled, so budget shifts can move across campaigns rather than only applying isolated up/down changes.")
+    if feature_settings.get("trend_lookback_days", 0):
+        notes.append(f"Trend memory was configured with a {feature_settings['trend_lookback_days']}-day lookback to reduce oscillation between runs.")
 
     return notes
 
@@ -380,7 +402,7 @@ def run_ai_review_cached(payload_json: str) -> dict:
         raise ValueError("OPENAI_API_KEY not found.")
 
     instructions = """
-You are an expert Amazon Sponsored Products optimizer.
+You are an expert Amazon advertising optimizer.
 
 You are reviewing ONLY low-confidence optimization actions. Do not review high-confidence actions.
 
@@ -401,7 +423,7 @@ Rules:
 - If decision is KEEP, set new_action to an empty string.
 - If decision is REMOVE, set new_action to an empty string.
 - If decision is MODIFY, you must supply new_action.
-- Use SQP opportunities only as strategy context, not as direct execution instructions.
+- Use placement, branded segmentation, trend, and reallocation context if present.
 
 Return structured JSON only.
 """
@@ -436,7 +458,7 @@ Return structured JSON only.
                 model=model,
                 instructions=instructions,
                 input=payload_json,
-                max_output_tokens=1400,
+                max_output_tokens=1800,
                 text={"format": {"type": "json_schema", "name": "ai_overrides", "schema": schema}},
             )
 
@@ -457,26 +479,35 @@ Return structured JSON only.
                         if value_value:
                             parts.append(str(value_value))
                 raw_text = "\n".join([p for p in parts if str(p).strip()]).strip()
+
             if not raw_text:
                 raise ValueError(f"{model}: OpenAI returned no readable text content.")
+
             try:
                 parsed = json.loads(raw_text)
             except json.JSONDecodeError:
                 start = raw_text.find("{")
                 end = raw_text.rfind("}")
                 if start != -1 and end != -1 and end > start:
-                    parsed = json.loads(raw_text[start:end + 1])
+                    parsed = json.loads(raw_text[start : end + 1])
                 else:
                     raise ValueError(f"{model}: OpenAI returned non-JSON content.")
+
             parsed["_model_used"] = model
             return parsed
-        except Exception as e:
-            last_error = e
+        except Exception as exc:
+            last_error = exc
             continue
+
     raise ValueError(f"All AI model fallbacks failed. Last error: {last_error}")
 
 
-def build_ai_action_candidates(combined_bulk_updates: pd.DataFrame, bid_recommendations: pd.DataFrame, search_term_actions: pd.DataFrame, campaign_budget_actions: pd.DataFrame) -> pd.DataFrame:
+def build_ai_action_candidates(
+    combined_bulk_updates: pd.DataFrame,
+    bid_recommendations: pd.DataFrame,
+    search_term_actions: pd.DataFrame,
+    campaign_budget_actions: pd.DataFrame,
+) -> pd.DataFrame:
     if combined_bulk_updates.empty:
         return pd.DataFrame()
 
@@ -527,6 +558,12 @@ def build_ai_action_candidates(combined_bulk_updates: pd.DataFrame, bid_recommen
             "recommended_bid": None,
             "current_daily_budget": None,
             "recommended_daily_budget": None,
+            "brand_segment": str(row.get("Brand Segment", row.get("brand_segment", ""))),
+            "placement_bucket": str(row.get("Placement Bucket", row.get("placement_bucket", ""))),
+            "portfolio_name": str(row.get("Portfolio Name", row.get("portfolio_name", ""))),
+            "reallocation_role": str(row.get("Reallocation Role", row.get("reallocation_role", ""))),
+            "roas_trend": str(row.get("ROAS Trend", row.get("roas_trend", ""))),
+            "prior_action_direction": str(row.get("Prior Action Direction", row.get("prior_action_direction", ""))),
         }
 
         campaign_key = normalize_text(row.get("Campaign Name", ""))
@@ -559,6 +596,10 @@ def build_ai_action_candidates(combined_bulk_updates: pd.DataFrame, bid_recommen
                     "score": get_number(first_present_key(m, ["score", "Score"])),
                     "reason": str(first_present_key(m, ["reason", "Reason"], "") or ""),
                     "confidence": str(first_present_key(m, ["confidence", "Confidence"], "") or "").upper(),
+                    "brand_segment": str(first_present_key(m, ["brand_segment", "Brand Segment"], candidate["brand_segment"])),
+                    "placement_bucket": str(first_present_key(m, ["placement_bucket", "Placement Bucket"], candidate["placement_bucket"])),
+                    "roas_trend": str(first_present_key(m, ["roas_trend", "ROAS Trend"], candidate["roas_trend"])),
+                    "prior_action_direction": str(first_present_key(m, ["prior_action_direction", "Prior Action Direction"], candidate["prior_action_direction"])),
                 })
         elif optimizer_action in {"HARVEST_TO_EXACT", "ADD_NEGATIVE_PHRASE"} and not search.empty:
             match = search[
@@ -579,6 +620,9 @@ def build_ai_action_candidates(combined_bulk_updates: pd.DataFrame, bid_recommen
                     "score": get_number(first_present_key(m, ["score", "Score"])),
                     "reason": str(first_present_key(m, ["reason", "Reason"], "") or ""),
                     "confidence": str(first_present_key(m, ["confidence", "Confidence"], "") or "").upper(),
+                    "brand_segment": str(first_present_key(m, ["brand_segment", "Brand Segment"], candidate["brand_segment"])),
+                    "placement_bucket": str(first_present_key(m, ["placement_bucket", "Placement Bucket"], candidate["placement_bucket"])),
+                    "roas_trend": str(first_present_key(m, ["roas_trend", "ROAS Trend"], candidate["roas_trend"])),
                 })
         elif entity == "Campaign" and optimizer_action in {"INCREASE_BUDGET", "DECREASE_BUDGET"} and not budget.empty:
             match = budget[(budget["_campaign_key"] == campaign_key) & (budget["_action_key"] == optimizer_action)]
@@ -597,6 +641,9 @@ def build_ai_action_candidates(combined_bulk_updates: pd.DataFrame, bid_recommen
                     "score": get_number(first_present_key(m, ["score", "Score"])),
                     "reason": str(first_present_key(m, ["reason", "Reason"], "") or ""),
                     "confidence": str(first_present_key(m, ["confidence", "Confidence"], "") or "").upper(),
+                    "brand_segment": str(first_present_key(m, ["brand_segment", "Brand Segment"], candidate["brand_segment"])),
+                    "portfolio_name": str(first_present_key(m, ["portfolio_name", "Portfolio Name"], candidate["portfolio_name"])),
+                    "reallocation_role": str(first_present_key(m, ["reallocation_role", "Reallocation Role"], candidate["reallocation_role"])),
                 })
 
         candidate["confidence"] = candidate.get("confidence") or score_action_confidence(candidate)
@@ -605,11 +652,19 @@ def build_ai_action_candidates(combined_bulk_updates: pd.DataFrame, bid_recommen
     return pd.DataFrame(rows)
 
 
-def build_ai_override_payload(low_conf_df: pd.DataFrame, account_summary: dict, account_health: dict, simulation_summary: dict, sqp_opportunities: pd.DataFrame, sqp_summary: dict) -> dict:
+def build_ai_override_payload(
+    low_conf_df: pd.DataFrame,
+    account_summary: dict,
+    account_health: dict,
+    simulation_summary: dict,
+    sqp_opportunities: pd.DataFrame,
+    sqp_summary: dict,
+) -> dict:
     keep_cols = [
         "id", "source_type", "optimizer_action", "campaign_name", "ad_group_name", "keyword_text", "match_type",
         "clicks", "orders", "spend", "sales", "roas", "impression_share_pct", "current_bid", "recommended_bid",
-        "current_daily_budget", "recommended_daily_budget", "score", "reason", "confidence",
+        "current_daily_budget", "recommended_daily_budget", "score", "reason", "confidence", "brand_segment",
+        "placement_bucket", "portfolio_name", "reallocation_role", "roas_trend", "prior_action_direction",
     ]
     cols = [c for c in keep_cols if c in low_conf_df.columns]
 
@@ -642,7 +697,14 @@ def get_strategy_parameters(strategy_mode: str) -> dict:
     return {"max_bid_up": 0.10, "max_bid_down": 0.15, "budget_up_pct": 0.10, "budget_down_pct": 0.10}
 
 
-def apply_ai_overrides_to_combined(combined_bulk_updates: pd.DataFrame, ai_response: dict, ai_candidates_df: pd.DataFrame, strategy_mode: str, max_bid_cap: float, max_budget_cap: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+def apply_ai_overrides_to_combined(
+    combined_bulk_updates: pd.DataFrame,
+    ai_response: dict,
+    ai_candidates_df: pd.DataFrame,
+    strategy_mode: str,
+    max_bid_cap: float,
+    max_budget_cap: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     if combined_bulk_updates.empty:
         return combined_bulk_updates.copy(), pd.DataFrame()
 
@@ -710,6 +772,12 @@ def apply_ai_overrides_to_combined(combined_bulk_updates: pd.DataFrame, ai_respo
             "Spend": candidate.get("spend", 0),
             "Sales": candidate.get("sales", 0),
             "ROAS": candidate.get("roas", 0),
+            "Brand Segment": candidate.get("brand_segment", ""),
+            "Placement Bucket": candidate.get("placement_bucket", ""),
+            "Portfolio Name": candidate.get("portfolio_name", ""),
+            "Reallocation Role": candidate.get("reallocation_role", ""),
+            "ROAS Trend": candidate.get("roas_trend", ""),
+            "Prior Action Direction": candidate.get("prior_action_direction", ""),
             "Original Action": original_action,
             "Decision": decision,
             "Final Action": "REMOVED" if was_removed else final_action,
@@ -821,6 +889,12 @@ Sponsored Display
 """
     )
     st.markdown("---")
+    st.markdown("## Engine Capability Detection")
+    render_capability_line("Placement weighting", orchestrator_supports("enable_placement_weighting"))
+    render_capability_line("Portfolio reallocation", orchestrator_supports("enable_portfolio_budget_reallocation"))
+    render_capability_line("Trend memory", orchestrator_supports("trend_lookback_days"))
+    render_capability_line("Custom brand terms", orchestrator_supports("brand_terms"))
+    st.markdown("---")
     st.markdown("## AI Optimization Layer")
     enable_ai_review = st.checkbox("Enable AI Optimization Layer", value=True)
     api_key_present = bool(get_openai_api_key())
@@ -830,7 +904,7 @@ Sponsored Display
     if enable_ai_review and not api_key_present:
         st.warning("OPENAI_API_KEY not found. Add it to Streamlit secrets or environment variables.")
     st.markdown("---")
-    st.markdown("**Version:** 2.0")
+    st.markdown(f"**Version:** {APP_VERSION}")
     st.markdown("**Owner:** Jake Yorgason, Evolved Commerce")
 
 
@@ -857,7 +931,7 @@ with header_right:
 
 render_info_banner(
     "Upgraded app layer",
-    "This version is cleaned up to match the upgraded ingestion engine: confidence scoring, explainability, simulation reporting, top opportunities, and Amazon-only business-aware optimization using Ads Manager plus Seller Central data.",
+    "This version is wired for placement optimization, branded vs non-branded controls, trend-memory settings, and portfolio-level budget reallocation reporting when the ingestion engine supports them.",
     tone="brand",
 )
 
@@ -866,7 +940,7 @@ render_info_banner(
 # Settings
 # =========================================================
 st.markdown('<div class="section-title">Optimization Settings</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-note">Core controls for bidding, efficiency, and zero-order action logic.</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-note">Core controls for bidding, efficiency, zero-order logic, and advanced optimization behavior.</div>', unsafe_allow_html=True)
 
 r1c1, r1c2, r1c3 = st.columns(3)
 with r1c1:
@@ -895,6 +969,48 @@ with core3:
     enable_negative_keywords = st.checkbox("Negative Keywords", value=True)
 with core4:
     enable_budget_updates = st.checkbox("Budget Updates", value=True)
+
+with st.expander("Advanced Optimization Layer", expanded=False):
+    adv1, adv2 = st.columns(2)
+    with adv1:
+        enable_placement_weighting = st.checkbox(
+            "Placement Optimization",
+            value=True,
+            help="Audits top of search, product pages, and rest of search when the engine supports placement weighting.",
+        )
+    with adv2:
+        enable_portfolio_budget_reallocation = st.checkbox(
+            "Portfolio-Level Budget Reallocation",
+            value=True,
+            help="Allows spend to shift between campaigns instead of only raising or lowering one campaign at a time.",
+        )
+
+    adv3, adv4 = st.columns(2)
+    with adv3:
+        trend_lookback_days = st.number_input("Trend Memory Lookback Days", min_value=7, max_value=90, value=21, step=1)
+    with adv4:
+        trend_change_tolerance = st.number_input("Trend Change Tolerance", min_value=0.01, max_value=0.5, value=0.10, step=0.01)
+
+    adv5, adv6 = st.columns(2)
+    with adv5:
+        branded_harvest_order_threshold = st.number_input("Branded Harvest Order Threshold", min_value=1, max_value=10, value=2, step=1)
+    with adv6:
+        branded_scale_roas_floor = st.number_input("Branded Scale ROAS Floor", min_value=0.50, max_value=1.50, value=0.85, step=0.05)
+
+    adv7, adv8 = st.columns(2)
+    with adv7:
+        branded_negative_multiplier = st.number_input("Branded Negative Click Multiplier", min_value=1.0, max_value=3.0, value=1.50, step=0.05)
+    with adv8:
+        brand_terms_text = st.text_area(
+            "Custom Brand Terms",
+            value="",
+            help="Comma-separated terms used to identify branded traffic more accurately.",
+            height=100,
+        )
+
+    brand_terms = parse_brand_terms(brand_terms_text)
+    if brand_terms:
+        st.caption("Parsed brand terms: " + ", ".join(brand_terms))
 
 with st.expander("Efficiency Guardrails", expanded=False):
     eg1, eg2 = st.columns(2)
@@ -965,7 +1081,6 @@ with st.expander("Shared Uploads", expanded=True):
     sqp_file = st.file_uploader("Search Query Performance Report (optional — prior month, Simple View only)", type=["csv"], key="sqp", help="Use the prior month's SQP report in Simple View only.")
     upload_status_line(sqp_file, "SQP report uploaded")
 
-
 with st.expander("Sponsored Products Uploads", expanded=True):
     sp1, sp2, sp3 = st.columns(3)
     with sp1:
@@ -1001,36 +1116,56 @@ sb_search_bytes = get_uploaded_bytes(sb_search_file)
 sb_impression_bytes = get_uploaded_bytes(sb_impression_file)
 sd_targeting_bytes = get_uploaded_bytes(sd_targeting_file)
 
+feature_settings = {
+    "enable_placement_weighting": enable_placement_weighting,
+    "enable_portfolio_budget_reallocation": enable_portfolio_budget_reallocation,
+    "trend_lookback_days": trend_lookback_days,
+    "trend_change_tolerance": trend_change_tolerance,
+    "brand_terms": brand_terms,
+    "branded_harvest_order_threshold": branded_harvest_order_threshold,
+    "branded_scale_roas_floor": branded_scale_roas_floor,
+    "branded_negative_multiplier": branded_negative_multiplier,
+}
+
 
 def build_engine() -> Phase2AdsOrchestrator:
-    return Phase2AdsOrchestrator(
-        bulk_file=bytes_to_buffer(bulk_bytes),
-        business_report_file=bytes_to_buffer(business_bytes),
-        sqp_report_file=bytes_to_buffer(sqp_bytes),
-        sp_search_term_file=bytes_to_buffer(sp_search_bytes),
-        sp_targeting_file=bytes_to_buffer(sp_targeting_bytes),
-        sp_impression_share_file=bytes_to_buffer(sp_impression_bytes),
-        sb_search_term_file=bytes_to_buffer(sb_search_bytes),
-        sb_impression_share_file=bytes_to_buffer(sb_impression_bytes),
-        sd_targeting_file=bytes_to_buffer(sd_targeting_bytes),
-        min_roas=min_roas,
-        min_clicks=min_clicks,
-        zero_order_click_threshold=losing_kw_click_threshold,
-        zero_order_action=losing_kw_action,
-        strategy_mode=strategy_mode,
-        enable_bid_updates=enable_bid_updates,
-        enable_search_harvesting=enable_search_harvesting,
-        enable_negative_keywords=enable_negative_keywords,
-        enable_budget_updates=enable_budget_updates,
-        enable_tacos_control=enable_tacos_control,
-        max_tacos_target=max_tacos_target,
-        enable_monthly_budget_control=enable_monthly_budget_control,
-        monthly_account_budget=monthly_account_budget,
-        month_to_date_spend=month_to_date_spend,
-        pacing_buffer_pct=pacing_buffer_pct,
-        max_bid_cap=max_bid_cap,
-        max_budget_cap=max_budget_cap,
-    )
+    kwargs = {
+        "bulk_file": bytes_to_buffer(bulk_bytes),
+        "business_report_file": bytes_to_buffer(business_bytes),
+        "sqp_report_file": bytes_to_buffer(sqp_bytes),
+        "sp_search_term_file": bytes_to_buffer(sp_search_bytes),
+        "sp_targeting_file": bytes_to_buffer(sp_targeting_bytes),
+        "sp_impression_share_file": bytes_to_buffer(sp_impression_bytes),
+        "sb_search_term_file": bytes_to_buffer(sb_search_bytes),
+        "sb_impression_share_file": bytes_to_buffer(sb_impression_bytes),
+        "sd_targeting_file": bytes_to_buffer(sd_targeting_bytes),
+        "min_roas": min_roas,
+        "min_clicks": min_clicks,
+        "zero_order_click_threshold": losing_kw_click_threshold,
+        "zero_order_action": losing_kw_action,
+        "strategy_mode": strategy_mode,
+        "enable_bid_updates": enable_bid_updates,
+        "enable_search_harvesting": enable_search_harvesting,
+        "enable_negative_keywords": enable_negative_keywords,
+        "enable_budget_updates": enable_budget_updates,
+        "enable_tacos_control": enable_tacos_control,
+        "max_tacos_target": max_tacos_target,
+        "enable_monthly_budget_control": enable_monthly_budget_control,
+        "monthly_account_budget": monthly_account_budget,
+        "month_to_date_spend": month_to_date_spend,
+        "pacing_buffer_pct": pacing_buffer_pct,
+        "max_bid_cap": max_bid_cap,
+        "max_budget_cap": max_budget_cap,
+        "enable_placement_weighting": enable_placement_weighting,
+        "enable_portfolio_budget_reallocation": enable_portfolio_budget_reallocation,
+        "trend_lookback_days": trend_lookback_days,
+        "trend_change_tolerance": trend_change_tolerance,
+        "brand_terms": brand_terms,
+        "branded_harvest_order_threshold": branded_harvest_order_threshold,
+        "branded_scale_roas_floor": branded_scale_roas_floor,
+        "branded_negative_multiplier": branded_negative_multiplier,
+    }
+    return Phase2AdsOrchestrator(**filter_engine_kwargs(kwargs))
 
 
 # =========================================================
@@ -1070,8 +1205,8 @@ if bulk_bytes is not None:
         spend_summary = safe_dict(validation.get("spend_summary"))
         runnable_types = safe_list(validation.get("runnable_types"))
         bulk_sheet_names = safe_list(validation.get("bulk_sheet_names"))
-    except Exception as e:
-        st.error(f"Upload validation failed: {e}")
+    except Exception as exc:
+        st.error(f"Upload validation failed: {exc}")
 
 sp_ready = safe_dict(readiness.get("SP")).get("ready", False)
 tacos_ready = (not enable_tacos_control) or (business_bytes is not None)
@@ -1131,8 +1266,8 @@ if sp_ready and tacos_ready:
         sqp_opportunities = safe_df(diagnostics.get("sqp_opportunities"))
         sqp_summary = safe_dict(diagnostics.get("sqp_summary"))
         top_opportunities = safe_df(diagnostics.get("top_opportunities"))
-    except Exception as e:
-        st.error(f"Diagnostics failed: {e}")
+    except Exception as exc:
+        st.error(f"Diagnostics failed: {exc}")
 elif bulk_bytes is not None and not sp_ready:
     st.info("Upload the required Sponsored Products reports to unlock the full diagnostic preview.")
 
@@ -1162,6 +1297,18 @@ if diagnostics:
         render_metric_card("Under Target", str(get_int(account_summary.get("campaigns_under_target"))), tone="bad")
     with dh6:
         render_metric_card("Scalable", str(get_int(account_summary.get("campaigns_scalable"))), tone="good")
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Advanced Features Configured For This Run</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        render_metric_card("Placement Optimization", "On" if enable_placement_weighting else "Off", tone="good" if enable_placement_weighting else "warn", small=True)
+    with c2:
+        render_metric_card("Portfolio Reallocation", "On" if enable_portfolio_budget_reallocation else "Off", tone="good" if enable_portfolio_budget_reallocation else "warn", small=True)
+    with c3:
+        render_metric_card("Trend Lookback", f"{trend_lookback_days}d", tone="brand", small=True)
+    with c4:
+        render_metric_card("Custom Brand Terms", str(len(brand_terms)), tone="brand", small=True)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Smart Warnings & Suggestions</div>', unsafe_allow_html=True)
@@ -1200,7 +1347,14 @@ if diagnostics:
     if not top_opportunities.empty:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">Top Scaling Opportunities</div>', unsafe_allow_html=True)
-        display_df(top_opportunities, preferred=["campaign_name", "ad_group_name", "target", "match_type", "roas", "orders", "clicks", "impression_share_pct", "score", "confidence", "reason"], height=420)
+        display_df(
+            top_opportunities,
+            preferred=[
+                "campaign_name", "ad_group_name", "target", "match_type", "brand_segment", "placement_bucket",
+                "roas", "orders", "clicks", "impression_share_pct", "score", "confidence", "reason",
+            ],
+            height=420,
+        )
 
     if not campaign_health_dashboard.empty:
         with st.expander("Campaign Health Table", expanded=False):
@@ -1208,7 +1362,15 @@ if diagnostics:
 
     if sqp_summary.get("uploaded"):
         with st.expander("Top SQP Opportunities", expanded=False):
-            display_df(sqp_opportunities, preferred=["search_query", "search_query_score", "search_query_volume", "purchase_rate_pct", "purchases_total_count", "purchases_brand_share_pct", "opportunity_tier", "recommended_action", "in_search_term_report"], height=420)
+            display_df(
+                sqp_opportunities,
+                preferred=[
+                    "search_query", "search_query_score", "search_query_volume", "purchase_rate_pct",
+                    "purchases_total_count", "purchases_brand_share_pct", "opportunity_tier",
+                    "recommended_action", "in_search_term_report",
+                ],
+                height=420,
+            )
 
     if enable_ai_review and api_key_present:
         render_info_banner("AI optimization is enabled", "After you run the optimizer, AI will automatically review low-confidence actions and use SQP context if available.", tone="brand")
@@ -1219,10 +1381,7 @@ if diagnostics:
 # =========================================================
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-title">Run Optimizer</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="section-note">When your uploads and settings are ready, run the optimizer across all available ad types.</div>',
-    unsafe_allow_html=True,
-)
+st.markdown('<div class="section-note">When your uploads and settings are ready, run the optimizer across all available ad types.</div>', unsafe_allow_html=True)
 run_left, run_center, run_right = st.columns([2, 3, 2])
 with run_center:
     run_optimizer = st.button("Run Optimization for Available Ad Types", type="primary", use_container_width=True)
@@ -1238,8 +1397,8 @@ if run_optimizer:
             with st.spinner("Analyzing campaigns and generating optimizations..."):
                 st.session_state["last_outputs"] = build_engine().process()
             st.success("Optimization complete.")
-        except Exception as e:
-            st.error(f"Optimization failed: {e}")
+        except Exception as exc:
+            st.error(f"Optimization failed: {exc}")
 
 
 # =========================================================
@@ -1261,6 +1420,7 @@ if "last_outputs" in st.session_state:
     output_account_health = safe_dict(outputs.get("account_health"))
     simulation_summary = safe_dict(outputs.get("simulation_summary"))
     run_history = safe_df(outputs.get("run_history"))
+    action_history = safe_df(outputs.get("action_history"))
     output_account_summary = safe_dict(outputs.get("account_summary"))
     output_sqp_opportunities = safe_df(outputs.get("sqp_opportunities"))
     output_sqp_summary = safe_dict(outputs.get("sqp_summary"))
@@ -1269,6 +1429,7 @@ if "last_outputs" in st.session_state:
     output_runnable_types = safe_list(outputs.get("runnable_types"))
     optimizer_diagnostics = safe_df(outputs.get("optimizer_diagnostics"))
     output_top_opportunities = safe_df(outputs.get("top_opportunities"))
+    budget_reallocation_plan = safe_df(outputs.get("budget_reallocation_plan"))
 
     tacos_total_ad_spend_used = get_number(output_account_health.get("effective_total_ad_spend"))
     tacos_business_sales_used = get_number(output_account_health.get("business_total_sales"))
@@ -1293,19 +1454,11 @@ if "last_outputs" in st.session_state:
                 ai_executive_summary = str(ai_response.get("executive_summary", "")).strip()
                 combined_bulk_updates, ai_override_log_df = apply_ai_overrides_to_combined(combined_bulk_updates, ai_response, ai_candidates_df, strategy_mode, max_bid_cap, max_budget_cap)
                 ai_impact_summary = build_ai_impact_summary(ai_override_log_df, original_bulk_count, len(combined_bulk_updates), ai_executive_summary)
-        except Exception as e:
-            st.warning(f"AI optimization skipped: {e}")
+        except Exception as exc:
+            st.warning(f"AI optimization skipped: {exc}")
 
-    suppressed_summary = estimate_tacos_suppressed_scaling(
-        combined_bulk_updates=combined_bulk_updates,
-        account_health=output_account_health,
-        simulation_summary=simulation_summary,
-    )
-    conflicting_signals = build_conflicting_signals(
-        account_health=output_account_health,
-        simulation_summary=simulation_summary,
-        account_summary=output_account_summary,
-    )
+    suppressed_summary = estimate_tacos_suppressed_scaling(combined_bulk_updates=combined_bulk_updates, account_health=output_account_health, simulation_summary=simulation_summary)
+    conflicting_signals = build_conflicting_signals(account_health=output_account_health, simulation_summary=simulation_summary, account_summary=output_account_summary)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Execution Summary</div>', unsafe_allow_html=True)
@@ -1348,36 +1501,43 @@ if "last_outputs" in st.session_state:
     with sim3:
         render_metric_card("Estimated Spend Impact", f"{get_number(simulation_summary.get('estimated_spend_impact_pct')):,.2f}%", tone="brand", small=True)
 
+    placement_count = 0
+    if not bid_recommendations.empty and "placement_bucket" in bid_recommendations.columns:
+        placement_count = int((bid_recommendations["placement_bucket"].astype(str).str.strip() != "").sum())
+    branded_count = 0
+    if not bid_recommendations.empty and "brand_segment" in bid_recommendations.columns:
+        branded_count = int((bid_recommendations["brand_segment"].astype(str).str.lower() == "branded").sum())
+    trend_count = 0
+    if not bid_recommendations.empty and "roas_trend" in bid_recommendations.columns:
+        trend_count = int((bid_recommendations["roas_trend"].astype(str).str.strip() != "").sum())
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Advanced Optimization Reporting</div>', unsafe_allow_html=True)
+    ao1, ao2, ao3, ao4 = st.columns(4)
+    with ao1:
+        render_metric_card("Placement Rows", str(placement_count), tone="brand")
+    with ao2:
+        render_metric_card("Branded Rows", str(branded_count), tone="good")
+    with ao3:
+        render_metric_card("Trend-Tracked Rows", str(trend_count), tone="brand")
+    with ao4:
+        render_metric_card("Reallocation Rows", str(len(budget_reallocation_plan)), tone="good" if not budget_reallocation_plan.empty else "warn")
+
     if enable_tacos_control:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">TACOS Calculation Transparency</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="section-note">This shows the exact numerator and denominator used for the account-wide TACOS guardrail.</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="section-note">This shows the exact numerator and denominator used for the account-wide TACOS guardrail.</div>', unsafe_allow_html=True)
 
         tx1, tx2, tx3, tx4 = st.columns(4)
         with tx1:
             render_metric_card("Total Ad Spend Used", f"${tacos_total_ad_spend_used:,.2f}", tone="brand")
         with tx2:
-            render_metric_card(
-                "Business Report Sales Used",
-                f"${tacos_business_sales_used:,.2f}" if tacos_business_sales_used > 0 else "Missing",
-                tone="brand" if tacos_business_sales_used > 0 else "bad",
-            )
+            render_metric_card("Business Report Sales Used", f"${tacos_business_sales_used:,.2f}" if tacos_business_sales_used > 0 else "Missing", tone="brand" if tacos_business_sales_used > 0 else "bad")
         with tx3:
             tacos_tone = "bad" if str(output_account_health.get("tacos_status", "")).lower() == "above_target" else "good"
-            render_metric_card(
-                "Account-Wide TACOS",
-                f"{float(tacos_pct_value):.2f}%" if tacos_pct_value is not None else "Missing",
-                tone=tacos_tone,
-            )
+            render_metric_card("Account-Wide TACOS", f"{float(tacos_pct_value):.2f}%" if tacos_pct_value is not None else "Missing", tone=tacos_tone)
         with tx4:
-            render_metric_card(
-                "Max TACOS Target",
-                f"{tacos_guardrail_target:.2f}%" if tacos_guardrail_target is not None else "Disabled",
-                tone="warn",
-            )
+            render_metric_card("Max TACOS Target", f"{tacos_guardrail_target:.2f}%" if tacos_guardrail_target is not None else "Disabled", tone="warn")
 
         st.caption(f"Scaling Status: {'Constrained' if str(output_account_health.get('tacos_status', '')).lower() == 'above_target' else 'Allowed'} ({tacos_status_value})")
 
@@ -1392,17 +1552,33 @@ if "last_outputs" in st.session_state:
     if conflicting_signals:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">Conflicting Signals</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="section-note">These are important situations where performance signals and account guardrails are pulling in different directions.</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="section-note">These are important situations where performance signals and account guardrails are pulling in different directions.</div>', unsafe_allow_html=True)
         for msg in conflicting_signals:
             st.warning(msg)
+
+    if not budget_reallocation_plan.empty:
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Portfolio Budget Reallocation Plan</div>', unsafe_allow_html=True)
+        display_df(
+            budget_reallocation_plan,
+            preferred=[
+                "portfolio_name", "portfolio_key", "campaign_name", "daily_budget", "recommended_daily_budget",
+                "reallocation_delta", "reallocation_role", "campaign_action", "score", "confidence", "reason",
+            ],
+            height=420,
+        )
 
     if not output_top_opportunities.empty:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">Top Opportunities</div>', unsafe_allow_html=True)
-        display_df(output_top_opportunities, preferred=["campaign_name", "ad_group_name", "target", "match_type", "roas", "orders", "clicks", "impression_share_pct", "score", "confidence", "reason"], height=420)
+        display_df(
+            output_top_opportunities,
+            preferred=[
+                "campaign_name", "ad_group_name", "target", "match_type", "brand_segment", "placement_bucket",
+                "roas", "orders", "clicks", "impression_share_pct", "score", "confidence", "reason",
+            ],
+            height=420,
+        )
 
     if output_sqp_summary.get("uploaded"):
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -1438,38 +1614,48 @@ if "last_outputs" in st.session_state:
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Optimization Narrative</div>', unsafe_allow_html=True)
-    for point in build_narrative(output_account_health, simulation_summary, pacing_status):
+    for point in build_narrative(output_account_health, simulation_summary, pacing_status, feature_settings):
         st.markdown(f"- {point}")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Results Explorer</div>', unsafe_allow_html=True)
-    tab_names = ["Execution Summary", "Bulk Upload", "Bid Recommendations", "Search Term Actions", "Budget Actions", "Top Opportunities", "SQP Opportunities", "AI Override Log", "Diagnostics"]
-    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(tab_names)
+    tab_names = [
+        "Execution Summary",
+        "Bulk Upload",
+        "Bid Recommendations",
+        "Search Term Actions",
+        "Budget Actions",
+        "Reallocation Plan",
+        "Top Opportunities",
+        "SQP Opportunities",
+        "AI Override Log",
+        "Diagnostics",
+    ]
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(tab_names)
     with tab0:
         display_df(execution_summary, height=520)
     with tab1:
         display_df(combined_bulk_updates, preferred=["Product", "Entity", "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "Budget", "Daily Budget", "Optimizer Action", "Confidence", "Score", "Reason"], height=520)
     with tab2:
-        display_df(bid_recommendations, preferred=["campaign_name", "ad_group_name", "target", "match_type", "current_bid", "recommended_bid", "recommended_action", "clicks", "orders", "roas", "impression_share_pct", "score", "confidence", "reason"], height=520)
+        display_df(bid_recommendations, preferred=["campaign_name", "ad_group_name", "target", "match_type", "brand_segment", "placement_bucket", "roas_trend", "current_bid", "recommended_bid", "recommended_action", "clicks", "orders", "roas", "impression_share_pct", "score", "confidence", "reason"], height=520)
     with tab3:
-        display_df(search_term_actions, preferred=["campaign_name", "ad_group_name", "search_term", "match_type", "search_term_action", "recommended_bid", "clicks", "orders", "roas", "score", "confidence", "reason"], height=520)
+        display_df(search_term_actions, preferred=["campaign_name", "ad_group_name", "search_term", "match_type", "brand_segment", "placement_bucket", "roas_trend", "search_term_action", "recommended_bid", "clicks", "orders", "roas", "score", "confidence", "reason"], height=520)
     with tab4:
-        display_df(campaign_budget_actions, preferred=["campaign_name", "daily_budget", "recommended_daily_budget", "campaign_action", "clicks", "orders", "roas", "avg_impression_share_pct", "score", "confidence", "reason"], height=520)
+        display_df(campaign_budget_actions, preferred=["portfolio_name", "campaign_name", "daily_budget", "recommended_daily_budget", "reallocation_role", "campaign_action", "clicks", "orders", "roas", "avg_impression_share_pct", "score", "confidence", "reason"], height=520)
     with tab5:
-        display_df(output_top_opportunities, preferred=["campaign_name", "ad_group_name", "target", "match_type", "roas", "orders", "clicks", "impression_share_pct", "score", "confidence", "reason"], height=520)
+        display_df(budget_reallocation_plan, preferred=["portfolio_name", "campaign_name", "daily_budget", "recommended_daily_budget", "reallocation_delta", "reallocation_role", "campaign_action", "score", "confidence", "reason"], height=520)
     with tab6:
-        display_df(output_sqp_opportunities, preferred=["search_query", "search_query_score", "search_query_volume", "purchase_rate_pct", "purchases_total_count", "purchases_brand_share_pct", "opportunity_tier", "recommended_action", "in_search_term_report"], height=520)
+        display_df(output_top_opportunities, preferred=["campaign_name", "ad_group_name", "target", "match_type", "brand_segment", "placement_bucket", "roas", "orders", "clicks", "impression_share_pct", "score", "confidence", "reason"], height=520)
     with tab7:
-        display_df(ai_override_log_df, height=520)
+        display_df(output_sqp_opportunities, preferred=["search_query", "search_query_score", "search_query_volume", "purchase_rate_pct", "purchases_total_count", "purchases_brand_share_pct", "opportunity_tier", "recommended_action", "in_search_term_report"], height=520)
     with tab8:
+        display_df(ai_override_log_df, height=520)
+    with tab9:
         display_df(optimizer_diagnostics, height=520)
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Downloads</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-note">Export the primary bulk uploads below. Additional reports are available in the optional section.</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="section-note">Export the primary bulk uploads below. Additional reports are available in the optional section.</div>', unsafe_allow_html=True)
 
     primary1, primary2, primary3 = st.columns(3)
     with primary1:
@@ -1504,6 +1690,8 @@ if "last_outputs" in st.session_state:
             if not execution_summary.empty:
                 st.download_button("Download Execution Summary", data=to_excel_bytes(execution_summary), file_name="execution_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
+        if not budget_reallocation_plan.empty:
+            st.download_button("Download Budget Reallocation Plan", data=to_excel_bytes(budget_reallocation_plan), file_name="budget_reallocation_plan.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         if not output_top_opportunities.empty:
             st.download_button("Download Top Opportunities", data=to_excel_bytes(output_top_opportunities), file_name="top_opportunities.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         if not output_sqp_opportunities.empty:
@@ -1516,6 +1704,10 @@ if "last_outputs" in st.session_state:
             display_df(run_history.sort_values(by="timestamp", ascending=False), height=320)
         else:
             display_df(run_history, height=320)
+
+    if not action_history.empty:
+        with st.expander("Action History", expanded=False):
+            display_df(action_history.sort_values(by="timestamp", ascending=False) if "timestamp" in action_history.columns else action_history, height=320)
 
 
 # =========================================================
