@@ -1442,11 +1442,11 @@ st.markdown(
 
 vr1, vr2, vr3 = st.columns(3)
 with vr1:
-    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="SP optimizer can run in Phase 1.")
+    render_readiness_block("Sponsored Products", safe_dict(readiness.get("SP")), note="")
 with vr2:
-    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="Validation only in Phase 1.")
+    render_readiness_block("Sponsored Brands", safe_dict(readiness.get("SB")), note="")
 with vr3:
-    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="Validation only in Phase 1.")
+    render_readiness_block("Sponsored Display", safe_dict(readiness.get("SD")), note="")
 
 if bulk_sheet_names:
     st.caption("Bulk tabs found: " + ", ".join(bulk_sheet_names))
