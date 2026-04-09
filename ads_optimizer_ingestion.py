@@ -1678,34 +1678,72 @@ class AdsOptimizerEngine:
     # BUSINESS REPORT / TACOS
     # -----------------------------
     def build_business_sales_total(self):
+        """
+        Build total business sales for TACOS using Seller Central Business Report data.
+    
+        Priority:
+        1. Sum Ordered Product Sales columns
+        2. If unavailable, fall back to B2C + B2B ordered product sales
+        3. Only then fall back to Total Sales / Sales
+    
+        This is intentionally stricter so TACOS is based on actual ordered product sales,
+        not a broader sales field when avoidable.
+        """
         if self.business_df is None or not self.enable_tacos_control:
             return None
-
+    
         df = self.business_df.copy()
-
-        possible_sales_cols = [
-            "Ordered Product Sales",
-            "Ordered Product Sales ",
-            "Total Sales",
-            "Sales",
-            "Ordered Product Sales - B2C",
-            "Ordered Product Sales - B2B",
+        df.columns = [str(c).strip() for c in df.columns]
+    
+        def _clean_money(series):
+            return pd.to_numeric(
+                series.astype(str)
+                .str.replace("$", "", regex=False)
+                .str.replace(",", "", regex=False)
+                .str.replace("(", "-", regex=False)
+                .str.replace(")", "", regex=False)
+                .str.strip(),
+                errors="coerce",
+            ).fillna(0)
+    
+        # 1) Exact Ordered Product Sales column
+        exact_ordered_cols = [
+            c for c in df.columns
+            if str(c).strip().lower() == "ordered product sales"
         ]
-
-        sales_col = self.get_optional_column(df, possible_sales_cols)
-        if sales_col is None:
-            return None
-
-        sales_series = (
-            df[sales_col]
-            .astype(str)
-            .str.replace("$", "", regex=False)
-            .str.replace(",", "", regex=False)
-            .str.strip()
-        )
-
-        total_sales = pd.to_numeric(sales_series, errors="coerce").fillna(0).sum()
-        return float(total_sales)
+    
+        if exact_ordered_cols:
+            total_sales = 0.0
+            for col in exact_ordered_cols:
+                total_sales += float(_clean_money(df[col]).sum())
+            return round(total_sales, 2)
+    
+        # 2) B2C / B2B ordered product sales columns
+        ordered_component_cols = [
+            c for c in df.columns
+            if str(c).strip().lower() in {
+                "ordered product sales - b2c",
+                "ordered product sales - b2b",
+            }
+        ]
+    
+        if ordered_component_cols:
+            total_sales = 0.0
+            for col in ordered_component_cols:
+                total_sales += float(_clean_money(df[col]).sum())
+            return round(total_sales, 2)
+    
+        # 3) Fallback only if ordered product sales is not available
+        fallback_cols = [
+            c for c in df.columns
+            if str(c).strip().lower() in {"total sales", "sales"}
+        ]
+    
+        if fallback_cols:
+            total_sales = float(_clean_money(df[fallback_cols[0]]).sum())
+            return round(total_sales, 2)
+    
+        return None
 
     # -----------------------------
     # ACCOUNT HEALTH
