@@ -138,9 +138,32 @@ BRAND_CLASSIFICATION_HINTS = [
     "brand", "branded", "defense", "defend", "hero", "catalog", "store", "video"
 ]
 
+PLACEMENT_BUCKET_MAP = {
+    "top of search": "top_of_search",
+    "top-of-search": "top_of_search",
+    "top of search (first page)": "top_of_search",
+    "amazon top": "top_of_search",
+    "product pages": "product_pages",
+    "product page": "product_pages",
+    "detail page": "product_pages",
+    "detail pages": "product_pages",
+    "rest of search": "rest_of_search",
+    "other on amazon": "rest_of_search",
+    "other": "rest_of_search",
+}
+
+DEFAULT_BRAND_TERMS = {
+    "brand", "branded", "store", "hero", "defense", "defend", "catalog"
+}
+
 
 def normalize_key(value):
     return " ".join(str(value or "").strip().lower().split())
+
+
+def normalize_placement_bucket(value):
+    raw = normalize_key(value).replace("_", " ").replace("-", " ")
+    return PLACEMENT_BUCKET_MAP.get(raw, raw.replace(" ", "_") if raw else "unknown")
 
 
 def compute_confidence_level(clicks, orders, spend, sales=0.0):
@@ -155,24 +178,35 @@ def compute_confidence_level(clicks, orders, spend, sales=0.0):
     return "LOW"
 
 
-def classify_brand_segment(text, campaign_name=""):
+def classify_brand_segment(text, campaign_name="", brand_terms=None):
     phrase = f"{campaign_name} {text}".strip().lower()
     if phrase == "":
         return "unknown"
-    brand_patterns = [
-        "brand", "branded", "store", "hero", "defense", "defend", "catalog"
+
+    dynamic_brand_terms = set(DEFAULT_BRAND_TERMS)
+    if brand_terms:
+        dynamic_brand_terms.update(
+            [normalize_key(x) for x in brand_terms if normalize_key(x)]
+        )
+
+    competitor_patterns = [
+        "vs ", "compare ", "alternative", "similar to", "replacement for",
+        "instead of", "better than", "competitor", "compare to"
     ]
-    competitor_patterns = ["vs ", "compare ", "alternative", "similar to", "replacement for"]
+
     if any(token in phrase for token in competitor_patterns):
         return "competitor"
-    if any(token in phrase for token in brand_patterns):
+
+    if any(term and term in phrase for term in dynamic_brand_terms):
         return "branded"
+
     return "non_branded"
 
 
 def classify_match_funnel(match_type, campaign_name="", ad_group_name=""):
     mt = normalize_key(match_type)
     naming = f"{campaign_name} {ad_group_name}".lower()
+
     if mt in {"exact"}:
         return "capture"
     if mt in {"phrase", "broad"}:
@@ -188,6 +222,21 @@ def dynamic_step_from_gap(gap_ratio, small_step, large_step):
     if gap_ratio >= 0.15:
         return (small_step + large_step) / 2.0
     return small_step
+
+
+def trend_direction(current_value, previous_value, tolerance=0.03):
+    current_value = float(current_value or 0)
+    previous_value = float(previous_value or 0)
+    if previous_value <= 0:
+        return "flat"
+    delta = (current_value - previous_value) / previous_value
+    if delta >= tolerance:
+        return "up"
+    if delta <= -tolerance:
+        return "down"
+    return "flat"
+
+
 
 
 class Phase1UploadValidator:
@@ -473,6 +522,13 @@ class AdsOptimizerEngine:
         cooldown_days=7,
         budget_reallocation_pct=0.15,
         enable_placement_weighting=True,
+        enable_portfolio_budget_reallocation=True,
+        trend_lookback_days=21,
+        trend_change_tolerance=0.10,
+        brand_terms=None,
+        branded_harvest_order_threshold=2,
+        branded_scale_roas_floor=0.85,
+        branded_negative_multiplier=1.50,
         external_total_ad_spend=None,
         tacos_constrained_override=False,
     ):
@@ -507,6 +563,13 @@ class AdsOptimizerEngine:
         self.cooldown_days = int(cooldown_days)
         self.budget_reallocation_pct = float(budget_reallocation_pct)
         self.enable_placement_weighting = bool(enable_placement_weighting)
+        self.enable_portfolio_budget_reallocation = bool(enable_portfolio_budget_reallocation)
+        self.trend_lookback_days = int(trend_lookback_days)
+        self.trend_change_tolerance = float(trend_change_tolerance)
+        self.brand_terms = [normalize_key(x) for x in (brand_terms or []) if normalize_key(x)]
+        self.branded_harvest_order_threshold = int(branded_harvest_order_threshold)
+        self.branded_scale_roas_floor = float(branded_scale_roas_floor)
+        self.branded_negative_multiplier = float(branded_negative_multiplier)
         self.external_total_ad_spend = (
             float(external_total_ad_spend)
             if external_total_ad_spend not in [None, ""]
@@ -520,6 +583,7 @@ class AdsOptimizerEngine:
         self.keyword_capable_ad_groups = set()
         self.margin_lookup = {}
         self.run_history_cache = pd.DataFrame()
+        self.action_history_cache = pd.DataFrame()
 
         self.apply_strategy_settings()
 
@@ -729,7 +793,7 @@ class AdsOptimizerEngine:
         return {}
 
     def detect_brand_segment(self, term, campaign_name=""):
-        return classify_brand_segment(term, campaign_name)
+        return classify_brand_segment(term, campaign_name, brand_terms=self.brand_terms)
 
     def detect_funnel_stage(self, match_type, campaign_name="", ad_group_name=""):
         return classify_match_funnel(match_type, campaign_name, ad_group_name)
@@ -752,36 +816,92 @@ class AdsOptimizerEngine:
         out["cooldown_active"] = False
         out["recent_action_count"] = 0
         out["last_action_days_ago"] = np.nan
-        history = self.load_run_history()
-        if history is None or history.empty:
+        out["previous_roas"] = np.nan
+        out["previous_clicks"] = np.nan
+        out["previous_orders"] = np.nan
+        out["previous_score"] = np.nan
+        out["prior_action_direction"] = ""
+        out["roas_trend"] = "flat"
+        out["click_trend"] = "flat"
+        out["order_trend"] = "flat"
+
+        history = self.load_action_history()
+        if history is None or history.empty or "timestamp" not in history.columns:
             return out
+
         hist = history.copy()
-        if "timestamp" not in hist.columns:
-            return out
         hist["timestamp"] = pd.to_datetime(hist["timestamp"], errors="coerce")
         hist = hist.dropna(subset=["timestamp"])
         if hist.empty:
             return out
+
         latest_ts = hist["timestamp"].max()
-        cutoff = latest_ts - pd.Timedelta(days=self.cooldown_days)
-        recent = hist[hist["timestamp"] >= cutoff].copy()
-        if recent.empty:
+        cutoff = latest_ts - pd.Timedelta(days=self.trend_lookback_days)
+        hist = hist[hist["timestamp"] >= cutoff].copy()
+        if hist.empty:
             return out
 
-        action_cols = [c for c in ["campaign_name", "ad_group_name", "target", "search_term", "match_type"] if c in recent.columns]
-        if not action_cols:
-            return out
-        recent["signature"] = recent.apply(lambda r: self.get_history_signature(r, level=level), axis=1)
-        summary = recent.groupby("signature", as_index=False).agg(
+        hist["signature"] = hist.apply(lambda r: self.get_history_signature(r, level=level), axis=1)
+        hist = hist.sort_values(["signature", "timestamp"])
+
+        last_rows = hist.groupby("signature", as_index=False).tail(1).copy()
+        counts = hist.groupby("signature", as_index=False).agg(
             recent_action_count=("signature", "count"),
             last_action_ts=("timestamp", "max"),
         )
-        summary["last_action_days_ago"] = (latest_ts - summary["last_action_ts"]).dt.days
+
+        merged_hist = last_rows.merge(counts, on="signature", how="left")
+
+        def infer_prior_direction(row):
+            action = str(
+                row.get("recommended_action")
+                or row.get("campaign_action")
+                or row.get("search_term_action")
+                or ""
+            ).upper()
+            if "INCREASE" in action:
+                return "increase"
+            if "DECREASE" in action or "NEGATIVE" in action:
+                return "decrease"
+            return "flat"
+
+        merged_hist["prior_action_direction"] = merged_hist.apply(infer_prior_direction, axis=1)
+        merged_hist["last_action_days_ago"] = (latest_ts - merged_hist["last_action_ts"]).dt.days
+
         out["signature"] = out.apply(lambda r: self.get_history_signature(r, level=level), axis=1)
-        out = out.merge(summary[["signature", "recent_action_count", "last_action_days_ago"]], on="signature", how="left")
+        out = out.merge(
+            merged_hist[
+                [
+                    "signature", "recent_action_count", "last_action_days_ago",
+                    "roas", "clicks", "orders", "score", "prior_action_direction"
+                ]
+            ].rename(columns={
+                "roas": "previous_roas",
+                "clicks": "previous_clicks",
+                "orders": "previous_orders",
+                "score": "previous_score",
+            }),
+            on="signature",
+            how="left",
+        )
+
         out["recent_action_count"] = out["recent_action_count"].fillna(0)
         out["cooldown_active"] = out["recent_action_count"] > 0
+        out["roas_trend"] = out.apply(
+            lambda r: trend_direction(r.get("roas", 0), r.get("previous_roas", 0), self.trend_change_tolerance),
+            axis=1,
+        )
+        out["click_trend"] = out.apply(
+            lambda r: trend_direction(r.get("clicks", 0), r.get("previous_clicks", 0), self.trend_change_tolerance),
+            axis=1,
+        )
+        out["order_trend"] = out.apply(
+            lambda r: trend_direction(r.get("orders", 0), r.get("previous_orders", 0), self.trend_change_tolerance),
+            axis=1,
+        )
+
         return out
+
 
     def compute_action_confidence(self, row):
         return compute_confidence_level(row.get("clicks", 0), row.get("orders", 0), row.get("spend", 0), row.get("sales", 0))
@@ -816,28 +936,63 @@ class AdsOptimizerEngine:
         cvr = float(row.get("cvr", 0) or 0)
         ctr = float(row.get("ctr", 0) or 0)
 
-        roas_ratio = (roas / adjusted_target) if adjusted_target > 0 else 0
+        brand_segment = str(row.get("brand_segment", "") or "")
+        funnel_stage = str(row.get("funnel_stage", "") or "")
+        placement_bucket = str(row.get("placement_bucket", "") or "")
+        roas_trend = str(row.get("roas_trend", "flat") or "flat")
+        order_trend = str(row.get("order_trend", "flat") or "flat")
+
+        effective_target = adjusted_target
+        if brand_segment == "branded":
+            effective_target = max(adjusted_target * self.branded_scale_roas_floor, 1.0)
+        elif brand_segment == "competitor":
+            effective_target = adjusted_target * 1.10
+
+        roas_ratio = (roas / effective_target) if effective_target > 0 else 0
         score = 0.0
-        score += min(roas_ratio, 2.0) * 0.40
-        score += min(orders / max(self.min_orders_for_scaling, 1), 2.0) * 0.20
-        score += min(clicks / max(self.min_clicks, 1), 2.0) * 0.10
-        score += min(cvr * 10, 1.5) * 0.15
+        score += min(roas_ratio, 2.0) * 0.38
+        score += min(orders / max(self.min_orders_for_scaling, 1), 2.0) * 0.18
+        score += min(clicks / max(self.min_clicks, 1), 2.0) * 0.08
+        score += min(cvr * 10, 1.5) * 0.14
         score += min(ctr * 20, 1.0) * 0.05
+
         if impression_share > 0 and impression_share < 20:
             score += 0.10
+
+        if placement_bucket == "top_of_search" and roas_ratio >= 1:
+            score += 0.12
+        elif placement_bucket == "product_pages" and roas_ratio < 1:
+            score -= 0.08
+        elif placement_bucket == "rest_of_search" and roas_ratio >= 1:
+            score += 0.03
+
+        if brand_segment == "branded":
+            score += 0.10
+        elif brand_segment == "competitor":
+            score -= 0.08
+
+        if funnel_stage == "capture":
+            score += 0.05
+
+        if roas_trend == "up":
+            score += 0.08
+        elif roas_trend == "down":
+            score -= 0.08
+
+        if order_trend == "up":
+            score += 0.05
+        elif order_trend == "down":
+            score -= 0.05
+
         if spend >= 15 and orders == 0:
             score -= 0.40
         if clicks >= self.zero_order_click_threshold and orders == 0:
             score -= 0.25
         if row.get("cooldown_active"):
-            score -= 0.10
-        if row.get("brand_segment") == "competitor":
-            score -= 0.05
-        if row.get("brand_segment") == "branded":
-            score += 0.05
-        if row.get("funnel_stage") == "capture":
-            score += 0.03
+            score -= 0.12
+
         return round(score, 4)
+
 
     def determine_dynamic_bid_change(self, row, score, adjusted_target):
         current_bid = float(row.get("current_bid", 0) or 0)
@@ -847,32 +1002,68 @@ class AdsOptimizerEngine:
         roas = float(row.get("roas", 0) or 0)
         orders = float(row.get("orders", 0) or 0)
         clicks = float(row.get("clicks", 0) or 0)
-        gap_ratio = abs((roas - adjusted_target) / adjusted_target) if adjusted_target > 0 else 0
+
+        brand_segment = str(row.get("brand_segment", "") or "")
+        placement_bucket = str(row.get("placement_bucket", "") or "")
+        prior_action_direction = str(row.get("prior_action_direction", "") or "")
+        roas_trend = str(row.get("roas_trend", "flat") or "flat")
+        order_trend = str(row.get("order_trend", "flat") or "flat")
+
+        effective_target = adjusted_target
+        if brand_segment == "branded":
+            effective_target = max(adjusted_target * self.branded_scale_roas_floor, 1.0)
+        elif brand_segment == "competitor":
+            effective_target = adjusted_target * 1.10
+
+        gap_ratio = abs((roas - effective_target) / effective_target) if effective_target > 0 else 0
         increase_step = dynamic_step_from_gap(gap_ratio, min(0.04, self.max_bid_up), self.max_bid_up)
         decrease_step = dynamic_step_from_gap(gap_ratio, min(0.06, self.max_bid_down), self.max_bid_down)
 
-        placement_bucket = str(row.get("placement_bucket", "") or "").lower()
-        if self.enable_placement_weighting and placement_bucket == "top_of_search" and roas >= adjusted_target:
-            increase_step = min(self.max_bid_up, increase_step + 0.03)
-        if self.enable_placement_weighting and placement_bucket == "product_pages" and roas < adjusted_target:
-            decrease_step = min(self.max_bid_down, decrease_step + 0.02)
+        if self.enable_placement_weighting and placement_bucket == "top_of_search" and roas >= effective_target:
+            increase_step = min(self.max_bid_up, increase_step + 0.04)
+        if self.enable_placement_weighting and placement_bucket == "product_pages" and roas < effective_target:
+            decrease_step = min(self.max_bid_down, decrease_step + 0.03)
+        if self.enable_placement_weighting and placement_bucket == "rest_of_search" and roas >= effective_target * 1.10:
+            increase_step = min(self.max_bid_up, increase_step + 0.01)
 
-        if row.get("cooldown_active") and roas >= adjusted_target:
-            increase_step = min(increase_step, 0.03)
+        if brand_segment == "branded":
+            decrease_step = min(decrease_step, 0.08)
+            if roas >= effective_target:
+                increase_step = min(self.max_bid_up, increase_step + 0.02)
+
+        if row.get("cooldown_active"):
+            if prior_action_direction == "increase" and roas_trend != "up":
+                increase_step = min(increase_step, 0.02)
+            if prior_action_direction == "decrease" and roas_trend != "down":
+                decrease_step = min(decrease_step, 0.06)
+
+        if prior_action_direction == "increase" and roas_trend == "down":
+            increase_step = 0.0
+        if prior_action_direction == "decrease" and roas_trend == "up":
+            decrease_step = min(decrease_step, 0.04)
 
         if self.should_zero_order_decrease_bid() and clicks >= self.zero_order_click_threshold and orders == 0:
+            if brand_segment == "branded":
+                return "NO_ACTION", current_bid, 0.0
             new_bid = round(max(current_bid * (1 - max(decrease_step, 0.08)), 0.02), 2)
             return "DECREASE_BID", min(new_bid, self.max_bid_cap), max(decrease_step, 0.08)
 
-        if roas < adjusted_target and clicks >= self.min_clicks:
+        if roas < effective_target and clicks >= self.min_clicks:
             new_bid = round(max(current_bid * (1 - decrease_step), 0.02), 2)
             return "DECREASE_BID", min(new_bid, self.max_bid_cap), decrease_step
 
-        if (not self.build_budget_pacing_status().get("over_pace")) and score >= 0.95 and orders >= self.min_orders_for_scaling and roas >= adjusted_target * 1.05:
+        if (
+            not self.build_budget_pacing_status().get("over_pace")
+            and score >= 0.95
+            and orders >= self.min_orders_for_scaling
+            and roas >= effective_target * 1.05
+            and not (prior_action_direction == "increase" and roas_trend == "flat" and order_trend != "up")
+        ):
             new_bid = round(current_bid * (1 + increase_step), 2)
             return "INCREASE_BID", min(new_bid, self.max_bid_cap), increase_step
 
         return "NO_ACTION", current_bid, 0.0
+
 
     def determine_dynamic_budget_change(self, row, adjusted_target):
         current_budget = float(row.get("daily_budget", 0) or 0)
@@ -883,23 +1074,48 @@ class AdsOptimizerEngine:
         orders = float(row.get("orders", 0) or 0)
         clicks = float(row.get("clicks", 0) or 0)
         share = float(row.get("avg_impression_share_pct", 0) or 0)
-        gap_ratio = abs((roas - adjusted_target) / adjusted_target) if adjusted_target > 0 else 0
+        brand_segment = str(row.get("brand_segment", "") or "")
+        prior_action_direction = str(row.get("prior_action_direction", "") or "")
+        roas_trend = str(row.get("roas_trend", "flat") or "flat")
+        order_trend = str(row.get("order_trend", "flat") or "flat")
+
+        effective_target = adjusted_target
+        if brand_segment == "branded":
+            effective_target = max(adjusted_target * self.branded_scale_roas_floor, 1.0)
+        elif brand_segment == "competitor":
+            effective_target = adjusted_target * 1.10
+
+        gap_ratio = abs((roas - effective_target) / effective_target) if effective_target > 0 else 0
         up_step = dynamic_step_from_gap(gap_ratio, min(0.04, self.budget_up_pct), self.budget_up_pct)
         down_step = dynamic_step_from_gap(gap_ratio, min(0.05, self.budget_down_pct), self.budget_down_pct)
 
         if self.build_budget_pacing_status().get("over_pace"):
             up_step = 0.0
 
-        if roas >= adjusted_target * 1.10 and orders >= self.min_orders_for_scaling and share < 25 and up_step > 0:
-            new_budget = round(current_budget * (1 + up_step), 2)
-            return "INCREASE_BUDGET", min(new_budget, self.max_budget_cap), up_step
+        if row.get("cooldown_active") and prior_action_direction == "increase" and roas_trend != "up":
+            up_step = min(up_step, 0.03)
+        if row.get("cooldown_active") and prior_action_direction == "decrease" and roas_trend != "down":
+            down_step = min(down_step, 0.06)
 
-        if (roas < adjusted_target and clicks >= max(self.min_clicks * 3, 25)) or (orders == 0 and float(row.get("spend", 0) or 0) >= 20):
+        if brand_segment == "branded" and roas >= effective_target:
+            up_step = min(self.budget_up_pct, up_step + 0.02)
+            down_step = min(down_step, 0.08)
+
+        if roas >= effective_target * 1.10 and orders >= self.min_orders_for_scaling and share < 25 and up_step > 0:
+            if not (prior_action_direction == "increase" and roas_trend == "flat" and order_trend != "up"):
+                new_budget = round(current_budget * (1 + up_step), 2)
+                return "INCREASE_BUDGET", min(new_budget, self.max_budget_cap), up_step
+
+        if (roas < effective_target and clicks >= max(self.min_clicks * 3, 25)) or (orders == 0 and float(row.get("spend", 0) or 0) >= 20):
+            if brand_segment == "branded" and roas_trend == "up":
+                return "NO_ACTION", current_budget, 0.0
             new_budget = round(max(current_budget * (1 - down_step), 1.00), 2)
             return "DECREASE_BUDGET", min(new_budget, self.max_budget_cap), down_step
 
         return "NO_ACTION", current_budget, 0.0
 
+    # -----------------------------
+    # CAMPAIGN HEALTH DASHBOARD
     # -----------------------------
     # CAMPAIGN HEALTH DASHBOARD
     # -----------------------------
@@ -1285,6 +1501,37 @@ class AdsOptimizerEngine:
             return pd.read_csv(history_path)
         return pd.DataFrame()
 
+
+    def load_action_history(self):
+        history_path = "action_history.csv"
+        if os.path.exists(history_path):
+            return pd.read_csv(history_path)
+        return pd.DataFrame()
+
+    def save_action_history(self, action_df: pd.DataFrame, entity_level: str):
+        if action_df is None or action_df.empty:
+            return
+
+        history_path = "action_history.csv"
+        export = action_df.copy()
+        export["timestamp"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        export["entity_level"] = entity_level
+
+        keep_cols = [
+            "timestamp", "entity_level", "campaign_name", "ad_group_name", "target", "search_term",
+            "match_type", "recommended_action", "campaign_action", "search_term_action",
+            "recommended_bid", "recommended_daily_budget", "score", "roas", "clicks", "orders",
+            "spend", "sales", "brand_segment", "placement_bucket"
+        ]
+        keep_cols = [c for c in keep_cols if c in export.columns]
+        export = export[keep_cols].copy()
+
+        if os.path.exists(history_path):
+            existing = pd.read_csv(history_path)
+            export = pd.concat([existing, export], ignore_index=True)
+
+        export.to_csv(history_path, index=False)
+
     # -----------------------------
     # PRE-OPTIMIZATION DIAGNOSTICS
     # -----------------------------
@@ -1435,7 +1682,10 @@ class AdsOptimizerEngine:
         normalized["search_term"] = self.clean_text(df["Customer Search Term"])
         normalized["match_type"] = self.clean_text(df["Match Type"])
         placement_col = self.get_optional_column(df, ["Placement", "Placement Type"])
-        normalized["placement_bucket"] = self.clean_text(df[placement_col]) if placement_col else ""
+        normalized["placement_bucket"] = (
+            df[placement_col].map(normalize_placement_bucket)
+            if placement_col else "unknown"
+        )
 
         normalized["clicks"] = self.safe_numeric(df["Clicks"])
         normalized["impressions"] = self.safe_numeric(df["Impressions"])
@@ -1466,7 +1716,10 @@ class AdsOptimizerEngine:
         normalized["target"] = self.clean_text(df["Targeting"])
         normalized["match_type"] = self.clean_text(df["Match Type"])
         placement_col = self.get_optional_column(df, ["Placement", "Placement Type"])
-        normalized["placement_bucket"] = self.clean_text(df[placement_col]) if placement_col else ""
+        normalized["placement_bucket"] = (
+            df[placement_col].map(normalize_placement_bucket)
+            if placement_col else "unknown"
+        )
 
         normalized["clicks"] = self.safe_numeric(df["Clicks"])
         normalized["impressions"] = self.safe_numeric(df["Impressions"])
@@ -1515,6 +1768,11 @@ class AdsOptimizerEngine:
         normalized["ad_group_name"] = self.clean_text(df[ad_group_col])
         normalized["target"] = self.clean_text(df[target_col])
         normalized["match_type"] = self.clean_text(df[match_type_col])
+        placement_col = self.get_optional_column(df, ["Placement", "Placement Type"])
+        normalized["placement_bucket"] = (
+            df[placement_col].map(normalize_placement_bucket)
+            if placement_col else "unknown"
+        )
 
         raw_share = (
             df[share_col]
@@ -1671,6 +1929,8 @@ class AdsOptimizerEngine:
         entity_col = self.get_first_existing_column(df, ["Entity"], "entity")
         campaign_id_col = self.get_optional_column(df, ["Campaign ID"])
         budget_col = self.get_optional_column(df, ["Daily Budget"])
+        portfolio_name_col = self.get_optional_column(df, ["Portfolio Name", "Portfolio"])
+        portfolio_id_col = self.get_optional_column(df, ["Portfolio ID"])
 
         rows = df[df[entity_col] == "Campaign"].copy()
 
@@ -1680,9 +1940,19 @@ class AdsOptimizerEngine:
         )
         normalized["campaign_id"] = self.clean_text(rows[campaign_id_col]) if campaign_id_col else ""
         normalized["daily_budget"] = self.safe_numeric(rows[budget_col]) if budget_col else 0
+        normalized["portfolio_name"] = self.clean_text(rows[portfolio_name_col]) if portfolio_name_col else ""
+        normalized["portfolio_id"] = self.clean_text(rows[portfolio_id_col]) if portfolio_id_col else ""
+
+        normalized["portfolio_key"] = np.where(
+            normalized["portfolio_id"].astype(str).str.strip() != "",
+            normalized["portfolio_id"].astype(str).str.strip(),
+            normalized["portfolio_name"].astype(str).str.strip().str.lower()
+        )
 
         return normalized
 
+    # -----------------------------
+    # BUSINESS REPORT / TACOS
     # -----------------------------
     # BUSINESS REPORT / TACOS
     # -----------------------------
@@ -1839,6 +2109,8 @@ class AdsOptimizerEngine:
             + targeting["target"].str.lower().str.strip()
             + "||"
             + targeting["match_type"].str.lower().str.strip()
+            + "||"
+            + targeting["placement_bucket"].astype(str).str.lower().str.strip()
         )
 
         impression["join_key"] = (
@@ -1849,6 +2121,8 @@ class AdsOptimizerEngine:
             + impression["target"].str.lower().str.strip()
             + "||"
             + impression["match_type"].str.lower().str.strip()
+            + "||"
+            + impression["placement_bucket"].astype(str).str.lower().str.strip()
         )
 
         joined = targeting.merge(
@@ -2002,8 +2276,15 @@ class AdsOptimizerEngine:
             keyword_exists_key = campaign_name_l.strip() + "||" + ad_group_name_l.strip() + "||" + normalized_term
             negative_key = campaign_name_l.strip() + "||" + ad_group_name_l.strip() + "||" + normalized_term + "||negative phrase"
             brand_segment = row.get("brand_segment", self.detect_brand_segment(normalized_term, campaign_name))
-            harvest_threshold_orders = 3 if brand_segment == "branded" else 4
-            negative_click_floor = max(self.zero_order_click_threshold, 16 if brand_segment == "competitor" else 20)
+            roas_trend = str(row.get("roas_trend", "flat") or "flat")
+
+            harvest_threshold_orders = self.branded_harvest_order_threshold if brand_segment == "branded" else 4
+            negative_click_floor = max(
+                self.zero_order_click_threshold,
+                int(self.zero_order_click_threshold * self.branded_negative_multiplier) if brand_segment == "branded"
+                else 16 if brand_segment == "competitor"
+                else 20
+            )
 
             if (
                 self.enable_negative_keywords
@@ -2015,7 +2296,8 @@ class AdsOptimizerEngine:
                 and negative_key not in self.existing_negative_keywords
                 and len(normalized_term.split()) >= 2
                 and not any(term in normalized_term for term in ["anchor straps"])
-                and brand_segment != "branded"
+                and brand_segment not in {"branded"}
+                and roas_trend != "up"
             ):
                 action = "ADD_NEGATIVE_PHRASE"
 
@@ -2025,7 +2307,7 @@ class AdsOptimizerEngine:
                 and ad_group_key in self.keyword_capable_ad_groups
                 and row["orders"] >= harvest_threshold_orders
                 and row["clicks"] >= 5
-                and row["roas"] >= max(adjusted_min_roas, self.min_roas)
+                and row["roas"] >= max(adjusted_min_roas * (self.branded_scale_roas_floor if brand_segment == "branded" else 1.0), self.min_roas * (self.branded_scale_roas_floor if brand_segment == "branded" else 1.0))
                 and match_type != "exact"
                 and normalized_term != ""
                 and keyword_exists_key not in self.existing_any_keywords
@@ -2044,6 +2326,8 @@ class AdsOptimizerEngine:
         df["reason"] = reasons
         return df
 
+    # -----------------------------
+    # CAMPAIGN BUDGET ACTIONS
     # -----------------------------
     # CAMPAIGN BUDGET ACTIONS
     # -----------------------------
@@ -2093,6 +2377,101 @@ class AdsOptimizerEngine:
         recs["change_pct"] = change_pct
         return recs
 
+    def build_portfolio_budget_reallocation_plan(self, campaign_budget_actions_df):
+        if (
+            campaign_budget_actions_df is None
+            or campaign_budget_actions_df.empty
+            or not self.enable_portfolio_budget_reallocation
+        ):
+            return pd.DataFrame()
+
+        df = campaign_budget_actions_df.copy()
+        if "portfolio_key" not in df.columns:
+            df["portfolio_key"] = ""
+
+        plan_rows = []
+
+        for portfolio_key, group in df.groupby("portfolio_key", dropna=False):
+            if str(portfolio_key).strip() == "":
+                continue
+
+            donors = group[group["campaign_action"] == "DECREASE_BUDGET"].copy()
+            receivers = group[group["campaign_action"] == "INCREASE_BUDGET"].copy()
+
+            if donors.empty or receivers.empty:
+                continue
+
+            donors["available_delta"] = (donors["daily_budget"] - donors["recommended_daily_budget"]).clip(lower=0)
+            receivers["needed_delta"] = (receivers["recommended_daily_budget"] - receivers["daily_budget"]).clip(lower=0)
+
+            total_available = float(donors["available_delta"].sum())
+            total_needed = float(receivers["needed_delta"].sum())
+            if total_available <= 0 or total_needed <= 0:
+                continue
+
+            transferable = min(total_available, total_needed)
+
+            donors = donors.sort_values(["score", "roas"], ascending=[True, True]).copy()
+            receivers = receivers.sort_values(["score", "roas"], ascending=[False, False]).copy()
+
+            donor_rows = []
+            remaining_transfer = transferable
+            for _, donor in donors.iterrows():
+                if remaining_transfer <= 0:
+                    break
+                donor_take = min(float(donor["available_delta"]), remaining_transfer)
+                if donor_take <= 0:
+                    continue
+                donor_rows.append((donor, donor_take))
+                remaining_transfer -= donor_take
+
+            receiver_rows = []
+            remaining_transfer = transferable
+            for _, receiver in receivers.iterrows():
+                if remaining_transfer <= 0:
+                    break
+                receiver_give = min(float(receiver["needed_delta"]), remaining_transfer)
+                if receiver_give <= 0:
+                    continue
+                receiver_rows.append((receiver, receiver_give))
+                remaining_transfer -= receiver_give
+
+            for donor, donor_take in donor_rows:
+                plan_rows.append({
+                    "portfolio_key": portfolio_key,
+                    "portfolio_name": donor.get("portfolio_name", ""),
+                    "campaign_id": donor.get("campaign_id", ""),
+                    "campaign_name": donor.get("campaign_name", ""),
+                    "daily_budget": donor.get("daily_budget", 0),
+                    "recommended_daily_budget": round(float(donor.get("daily_budget", 0)) - donor_take, 2),
+                    "reallocation_delta": round(-donor_take, 2),
+                    "campaign_action": "DECREASE_BUDGET",
+                    "reallocation_role": "donor",
+                    "confidence": donor.get("confidence", ""),
+                    "score": donor.get("score", 0),
+                    "reason": f"{donor.get('reason', '')} | portfolio_reallocation=out",
+                })
+
+            for receiver, receiver_give in receiver_rows:
+                plan_rows.append({
+                    "portfolio_key": portfolio_key,
+                    "portfolio_name": receiver.get("portfolio_name", ""),
+                    "campaign_id": receiver.get("campaign_id", ""),
+                    "campaign_name": receiver.get("campaign_name", ""),
+                    "daily_budget": receiver.get("daily_budget", 0),
+                    "recommended_daily_budget": round(float(receiver.get("daily_budget", 0)) + receiver_give, 2),
+                    "reallocation_delta": round(receiver_give, 2),
+                    "campaign_action": "INCREASE_BUDGET",
+                    "reallocation_role": "receiver",
+                    "confidence": receiver.get("confidence", ""),
+                    "score": receiver.get("score", 0),
+                    "reason": f"{receiver.get('reason', '')} | portfolio_reallocation=in",
+                })
+
+        return pd.DataFrame(plan_rows)
+
+    # -----------------------------
+    # BULK GENERATORS
     # -----------------------------
     # BULK GENERATORS
     # -----------------------------
@@ -2406,6 +2785,10 @@ class AdsOptimizerEngine:
             adjusted_min_roas,
         )
 
+        portfolio_budget_reallocation_plan = self.build_portfolio_budget_reallocation_plan(campaign_budget_actions)
+        if not portfolio_budget_reallocation_plan.empty:
+            campaign_budget_actions = portfolio_budget_reallocation_plan.copy()
+
         bid_bulk_updates = self.generate_bid_bulk_updates(bid_recommendations)
         harvest_bulk_updates = self.generate_harvest_bulk_updates(search_term_actions)
         negative_bulk_updates = self.generate_negative_bulk_updates(search_term_actions)
@@ -2461,11 +2844,10 @@ class AdsOptimizerEngine:
         if not top_opportunities.empty:
             top_opportunities = top_opportunities.sort_values(by=["score", "roas", "orders"], ascending=[False, False, False]).head(25)
 
-        budget_reallocation_plan = campaign_budget_actions[campaign_budget_actions["campaign_action"].isin(["INCREASE_BUDGET", "DECREASE_BUDGET"])].copy()
-        if not budget_reallocation_plan.empty:
-            budget_reallocation_plan["recommended_reallocation_delta"] = budget_reallocation_plan["recommended_daily_budget"] - budget_reallocation_plan["daily_budget"]
-
         self.save_run_history(simulation_summary, account_health)
+        self.save_action_history(bid_recommendations, entity_level="target")
+        self.save_action_history(search_term_actions, entity_level="target")
+        self.save_action_history(campaign_budget_actions, entity_level="campaign")
 
         return {
             "bid_recommendations": bid_recommendations,
@@ -2483,7 +2865,7 @@ class AdsOptimizerEngine:
             "sqp_opportunities": sqp_opportunities,
             "sqp_summary": sqp_summary,
             "top_opportunities": top_opportunities,
-            "budget_reallocation_plan": budget_reallocation_plan,
+            "budget_reallocation_plan": portfolio_budget_reallocation_plan if 'portfolio_budget_reallocation_plan' in locals() else pd.DataFrame(),
         }
 
 # =========================================================
