@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any, Optional
 
 import pandas as pd
-import streamlit as st
+import streamlit as stn
 from openai import OpenAI
 
 from ads_optimizer_ingestion import Phase2UploadValidator, Phase2AdsOrchestrator
@@ -1324,33 +1324,122 @@ if "last_outputs" in st.session_state:
     with tab8:
         display_df(optimizer_diagnostics, height=520)
 
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
     st.markdown('<div class="section-title">Downloads</div>', unsafe_allow_html=True)
-    d1, d2 = st.columns(2)
-    d3, d4 = st.columns(2)
-    with d1:
+    st.markdown(
+        '<div class="section-note">Export the primary bulk uploads below. Additional reports are available in the optional section.</div>',
+        unsafe_allow_html=True,
+    )
+
+    primary1, primary2, primary3 = st.columns(3)
+
+    with primary1:
         if not sp_bulk_updates.empty:
-            st.download_button("Download SP Bulk Upload", data=to_excel_bytes(sp_bulk_updates), file_name="amazon_bulk_updates_sp.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button(
+                label="Download SP Bulk Upload",
+                data=to_excel_bytes(sp_bulk_updates),
+                file_name="amazon_bulk_updates_sp.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bulk_upload_sp_xlsx",
+                use_container_width=True,
+            )
+        else:
+            st.info("No SP bulk upload")
+
+    with primary2:
         if not sb_bulk_updates.empty:
-            st.download_button("Download SB Bulk Upload", data=to_excel_bytes(sb_bulk_updates), file_name="amazon_bulk_updates_sb.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button(
+                label="Download SB Bulk Upload",
+                data=to_excel_bytes(sb_bulk_updates),
+                file_name="amazon_bulk_updates_sb.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bulk_upload_sb_xlsx",
+                use_container_width=True,
+            )
+        else:
+            st.info("No SB bulk upload")
+
+    with primary3:
         if not sd_bulk_updates.empty:
-            st.download_button("Download SD Bulk Upload", data=to_excel_bytes(sd_bulk_updates), file_name="amazon_bulk_updates_sd.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-        if sp_bulk_updates.empty and sb_bulk_updates.empty and sd_bulk_updates.empty:
-            st.info("No bulk-upload rows available for this run.")
-    with d2:
-        st.download_button("Download Bid Recommendations", data=to_excel_bytes(bid_recommendations), file_name="bid_recommendations.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    with d3:
-        st.download_button("Download Search Term Actions", data=to_excel_bytes(search_term_actions), file_name="search_term_actions.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    with d4:
-        st.download_button("Download Campaign Budget Actions", data=to_excel_bytes(campaign_budget_actions), file_name="campaign_budget_actions.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    if not execution_summary.empty:
-        st.download_button("Download Execution Summary", data=to_excel_bytes(execution_summary), file_name="execution_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    if not output_top_opportunities.empty:
-        st.download_button("Download Top Opportunities", data=to_excel_bytes(output_top_opportunities), file_name="top_opportunities.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    if not output_sqp_opportunities.empty:
-        st.download_button("Download SQP Opportunities", data=to_excel_bytes(output_sqp_opportunities), file_name="sqp_opportunities.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    if not ai_override_log_df.empty:
-        st.download_button("Download AI Override Log", data=to_excel_bytes(ai_override_log_df), file_name="ai_override_log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button(
+                label="Download SD Bulk Upload",
+                data=to_excel_bytes(sd_bulk_updates),
+                file_name="amazon_bulk_updates_sd.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bulk_upload_sd_xlsx",
+                use_container_width=True,
+            )
+        else:
+            st.info("No SD bulk upload")
+
+    if sp_bulk_updates.empty and sb_bulk_updates.empty and sd_bulk_updates.empty:
+        st.info("No bulk-upload rows available for this run.")
+
+    with st.expander("Optional Downloads", expanded=False):
+        opt1, opt2 = st.columns(2)
+        opt3, opt4 = st.columns(2)
+
+        with opt1:
+            st.download_button(
+                label="Download Bid Recommendations",
+                data=to_excel_bytes(bid_recommendations),
+                file_name="bid_recommendations.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_bid_recommendations_xlsx",
+                use_container_width=True,
+            )
+
+        with opt2:
+            st.download_button(
+                label="Download Search Term Actions",
+                data=to_excel_bytes(search_term_actions),
+                file_name="search_term_actions.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_search_term_actions_xlsx",
+                use_container_width=True,
+            )
+
+        with opt3:
+            st.download_button(
+                label="Download Campaign Budget Actions",
+                data=to_excel_bytes(campaign_budget_actions),
+                file_name="campaign_budget_actions.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_campaign_budget_actions_xlsx",
+                use_container_width=True,
+            )
+
+        with opt4:
+            if not execution_summary.empty:
+                st.download_button(
+                    label="Download Execution Summary",
+                    data=to_excel_bytes(execution_summary),
+                    file_name="execution_summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_execution_summary_xlsx",
+                    use_container_width=True,
+                )
+
+        if not output_sqp_opportunities.empty:
+            st.download_button(
+                label="Download SQP Opportunities",
+                data=to_excel_bytes(output_sqp_opportunities),
+                file_name="sqp_opportunities.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_sqp_opportunities_xlsx",
+                use_container_width=True,
+            )
+
+        if not ai_override_log_df.empty:
+            st.download_button(
+                label="Download AI Override Log",
+                data=to_excel_bytes(ai_override_log_df),
+                file_name="ai_override_log.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_ai_override_log_xlsx",
+                use_container_width=True,
+            )
     with st.expander("Run History", expanded=False):
         if not run_history.empty and "timestamp" in run_history.columns:
             display_df(run_history.sort_values(by="timestamp", ascending=False), height=320)
