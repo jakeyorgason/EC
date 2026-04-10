@@ -2834,6 +2834,9 @@ class AdsOptimizerEngine:
         return bulk.reset_index(drop=True)
 
     def generate_harvest_bulk_updates(self, search_term_actions_df):
+        if not hasattr(self, "harvested_exact_memory"):
+            self.harvested_exact_memory = set()
+
         actionable = search_term_actions_df[
             search_term_actions_df["search_term_action"] == "HARVEST_TO_EXACT"
         ].copy()
@@ -2989,6 +2992,8 @@ class AdsOptimizerEngine:
         if actionable.empty:
             return pd.DataFrame()
 
+        if not hasattr(self, "harvested_exact_memory"):
+            self.harvested_exact_memory = set()
         self.harvested_exact_memory.update(actionable["memory_key"].tolist())
 
         bulk = pd.DataFrame(index=actionable.index)
