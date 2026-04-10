@@ -2693,6 +2693,9 @@ class AdsOptimizerEngine:
             search_term_actions_df["search_term_action"] == "HARVEST_TO_EXACT"
         ].copy()
 
+        if actionable.empty:
+            return pd.DataFrame()
+
         actionable = actionable[
             actionable["campaign_id"].fillna("").astype(str).str.strip() != ""
         ]
@@ -2717,6 +2720,72 @@ class AdsOptimizerEngine:
 
         actionable = actionable[actionable["normalized_term"] != ""]
         actionable = actionable[actionable["ad_group_key"].isin(self.keyword_capable_ad_groups)]
+
+        if actionable.empty:
+            return pd.DataFrame()
+
+        actionable["exact_dupe_key"] = (
+            actionable["campaign_id"].astype(str).str.strip()
+            + "||"
+            + actionable["ad_group_id"].astype(str).str.strip()
+            + "||"
+            + actionable["normalized_term"]
+            + "||exact"
+        )
+
+        existing_exact_keys = set()
+
+        if hasattr(self, "bulk_df") and self.bulk_df is not None and not self.bulk_df.empty:
+            bulk = self.bulk_df.copy()
+            bulk.columns = [str(c).strip() for c in bulk.columns]
+
+            if "Entity" in bulk.columns:
+                exact_rows = bulk[
+                    bulk["Entity"].astype(str).str.strip().eq("Keyword")
+                ].copy()
+
+                if not exact_rows.empty:
+                    for required_col in ["Campaign ID", "Ad Group ID", "Keyword Text", "Match Type"]:
+                        if required_col not in exact_rows.columns:
+                            exact_rows[required_col] = ""
+
+                    exact_rows["normalized_term"] = (
+                        exact_rows["Keyword Text"]
+                        .fillna("")
+                        .astype(str)
+                        .str.lower()
+                        .str.strip()
+                        .str.replace(r"\s+", " ", regex=True)
+                    )
+
+                    exact_rows["normalized_match"] = (
+                        exact_rows["Match Type"]
+                        .fillna("")
+                        .astype(str)
+                        .str.lower()
+                        .str.strip()
+                    )
+
+                    exact_rows = exact_rows[exact_rows["normalized_match"] == "exact"].copy()
+
+                    existing_exact_keys = set(
+                        exact_rows["Campaign ID"].fillna("").astype(str).str.strip()
+                        + "||"
+                        + exact_rows["Ad Group ID"].fillna("").astype(str).str.strip()
+                        + "||"
+                        + exact_rows["normalized_term"]
+                        + "||exact"
+                    )
+
+        actionable = actionable[~actionable["exact_dupe_key"].isin(existing_exact_keys)].copy()
+
+        actionable = actionable.drop_duplicates(
+            subset=["campaign_id", "ad_group_id", "normalized_term"],
+            keep="first",
+        )
+
+        if actionable.empty:
+            return pd.DataFrame()
 
         bulk = pd.DataFrame(index=actionable.index)
         bulk["Product"] = "Sponsored Products"
