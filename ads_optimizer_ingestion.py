@@ -104,7 +104,7 @@ def apply_cross_type_bulk_safeguards(df):
     preferred_columns = [
         'Product', 'Entity', 'Operation', 'Campaign ID', 'Ad Group ID', 'Keyword ID',
         'Product Targeting ID', 'Campaign Name', 'Ad Group Name', 'State',
-        'Keyword Text', 'Match Type', 'Bid', 'Budget', 'Daily Budget', 'Optimizer Action',
+        'Keyword Text', 'Match Type', 'Bid', 'Budget', 'Daily Budget', 'Placement Type', 'Placement %', 'Optimizer Action',
         'ad_type', 'source_type', 'campaign', 'ad_group'
     ]
 
@@ -238,6 +238,32 @@ def dynamic_step_from_gap(gap_ratio, small_step, large_step):
     if gap_ratio >= 0.15:
         return (small_step + large_step) / 2.0
     return small_step
+
+
+def round_to_step(value, step, minimum=None, maximum=None, decimals=2):
+    if value in (None, ""):
+        return value
+    numeric = float(value)
+    if step and step > 0:
+        numeric = round(numeric / step) * step
+    if minimum is not None:
+        numeric = max(minimum, numeric)
+    if maximum is not None:
+        numeric = min(maximum, numeric)
+    return round(numeric, decimals)
+
+
+def round_bid_value(value, max_bid_cap=None):
+    return round_to_step(value, step=0.05, minimum=0.02, maximum=max_bid_cap, decimals=2)
+
+
+def round_budget_value(value, max_budget_cap=None):
+    return round_to_step(value, step=5.0, minimum=1.0, maximum=max_budget_cap, decimals=2)
+
+
+def round_placement_pct(value):
+    return int(round_to_step(value, step=5.0, minimum=0.0, maximum=900.0, decimals=0))
+
 
 
 def trend_direction(current_value, previous_value, tolerance=0.03):
@@ -1061,12 +1087,12 @@ class AdsOptimizerEngine:
         if self.should_zero_order_decrease_bid() and clicks >= self.zero_order_click_threshold and orders == 0:
             if brand_segment == "branded":
                 return "NO_ACTION", current_bid, 0.0
-            new_bid = round(max(current_bid * (1 - max(decrease_step, 0.08)), 0.02), 2)
-            return "DECREASE_BID", min(new_bid, self.max_bid_cap), max(decrease_step, 0.08)
+            new_bid = round_bid_value(current_bid * (1 - max(decrease_step, 0.08)), self.max_bid_cap)
+            return "DECREASE_BID", new_bid, max(decrease_step, 0.08)
 
         if roas < effective_target and clicks >= self.min_clicks:
-            new_bid = round(max(current_bid * (1 - decrease_step), 0.02), 2)
-            return "DECREASE_BID", min(new_bid, self.max_bid_cap), decrease_step
+            new_bid = round_bid_value(current_bid * (1 - decrease_step), self.max_bid_cap)
+            return "DECREASE_BID", new_bid, decrease_step
 
         if (
             not self.build_budget_pacing_status().get("over_pace")
@@ -1075,8 +1101,8 @@ class AdsOptimizerEngine:
             and roas >= effective_target * 1.05
             and not (prior_action_direction == "increase" and roas_trend == "flat" and order_trend != "up")
         ):
-            new_bid = round(current_bid * (1 + increase_step), 2)
-            return "INCREASE_BID", min(new_bid, self.max_bid_cap), increase_step
+            new_bid = round_bid_value(current_bid * (1 + increase_step), self.max_bid_cap)
+            return "INCREASE_BID", new_bid, increase_step
 
         return "NO_ACTION", current_bid, 0.0
 
@@ -1125,8 +1151,8 @@ class AdsOptimizerEngine:
         if (roas < effective_target and clicks >= max(self.min_clicks * 3, 25)) or (orders == 0 and float(row.get("spend", 0) or 0) >= 20):
             if brand_segment == "branded" and roas_trend == "up":
                 return "NO_ACTION", current_budget, 0.0
-            new_budget = round(max(current_budget * (1 - down_step), 1.00), 2)
-            return "DECREASE_BUDGET", min(new_budget, self.max_budget_cap), down_step
+            new_budget = round_budget_value(current_budget * (1 - down_step), self.max_budget_cap)
+            return "DECREASE_BUDGET", new_budget, down_step
 
         return "NO_ACTION", current_budget, 0.0
 
@@ -2489,6 +2515,83 @@ class AdsOptimizerEngine:
     # -----------------------------
     # BULK GENERATORS
     # -----------------------------
+
+    def generate_placement_bulk_updates(self, targeting_with_share_df, bulk_campaigns_df, adjusted_min_roas):
+        if targeting_with_share_df is None or targeting_with_share_df.empty:
+            return pd.DataFrame()
+        if "placement_bucket" not in targeting_with_share_df.columns:
+            return pd.DataFrame()
+
+        perf = targeting_with_share_df.copy()
+        perf = perf[perf["placement_bucket"].astype(str).isin(["top_of_search", "product_pages", "rest_of_search"])].copy()
+        if perf.empty:
+            return pd.DataFrame()
+
+        placement_perf = (
+            perf.groupby(["campaign_name", "placement_bucket"], as_index=False)
+            .agg(clicks=("clicks", "sum"), orders=("orders", "sum"), spend=("spend", "sum"), sales=("sales", "sum"))
+        )
+        placement_perf["roas"] = np.where(placement_perf["spend"] > 0, placement_perf["sales"] / placement_perf["spend"], 0)
+
+        campaigns = bulk_campaigns_df.copy()
+        if campaigns.empty:
+            return pd.DataFrame()
+
+        recs = placement_perf.merge(campaigns, on="campaign_name", how="left")
+        recs = recs[recs["campaign_id"].astype(str).str.strip() != ""].copy()
+        if recs.empty:
+            return pd.DataFrame()
+
+        actions, pcts, reasons = [], [], []
+        for _, row in recs.iterrows():
+            roas = float(row.get("roas", 0) or 0)
+            orders = float(row.get("orders", 0) or 0)
+            clicks = float(row.get("clicks", 0) or 0)
+            placement = str(row.get("placement_bucket", "") or "")
+            action = "NO_ACTION"
+            pct = 0
+
+            if placement == "top_of_search" and roas >= adjusted_min_roas * 1.10 and orders >= self.min_orders_for_scaling:
+                action = "SET_PLACEMENT_MULTIPLIER"
+                pct = round_placement_pct(20)
+            elif placement == "product_pages" and clicks >= self.min_clicks and roas < adjusted_min_roas:
+                action = "SET_PLACEMENT_MULTIPLIER"
+                pct = round_placement_pct(0)
+            elif placement == "rest_of_search" and roas >= adjusted_min_roas and orders >= self.min_orders_for_scaling:
+                action = "SET_PLACEMENT_MULTIPLIER"
+                pct = round_placement_pct(10)
+
+            actions.append(action)
+            pcts.append(pct)
+            reasons.append(f"placement={placement} | roas={round(roas,2)} | target={round(adjusted_min_roas,2)}")
+
+        recs["placement_action"] = actions
+        recs["placement_pct"] = pcts
+        recs["reason"] = reasons
+        recs = recs[recs["placement_action"] != "NO_ACTION"].copy()
+        if recs.empty:
+            return pd.DataFrame()
+
+        bulk = pd.DataFrame(index=recs.index)
+        bulk["Product"] = "Sponsored Products"
+        bulk["Entity"] = "Campaign"
+        bulk["Operation"] = "Update"
+        bulk["Campaign ID"] = recs["campaign_id"]
+        bulk["Ad Group ID"] = ""
+        bulk["Keyword ID"] = ""
+        bulk["Campaign Name"] = recs["campaign_name"]
+        bulk["Ad Group Name"] = ""
+        bulk["State"] = "Enabled"
+        bulk["Keyword Text"] = ""
+        bulk["Match Type"] = ""
+        bulk["Bid"] = ""
+        bulk["Daily Budget"] = ""
+        bulk["Placement Type"] = recs["placement_bucket"]
+        bulk["Placement %"] = recs["placement_pct"]
+        bulk["Optimizer Action"] = recs["placement_action"]
+        bulk["Reason"] = recs["reason"]
+        return bulk.reset_index(drop=True)
+
     # BULK GENERATORS
     # -----------------------------
     def generate_bid_bulk_updates(self, recommendations_df):
@@ -2809,6 +2912,7 @@ class AdsOptimizerEngine:
         harvest_bulk_updates = self.generate_harvest_bulk_updates(search_term_actions)
         negative_bulk_updates = self.generate_negative_bulk_updates(search_term_actions)
         budget_bulk_updates = self.generate_budget_bulk_updates(campaign_budget_actions)
+        placement_bulk_updates = self.generate_placement_bulk_updates(targeting_with_share, bulk_campaigns, adjusted_min_roas)
 
         combined_bulk_updates = safe_concat_frames(
             [
@@ -2816,6 +2920,7 @@ class AdsOptimizerEngine:
                 harvest_bulk_updates,
                 negative_bulk_updates,
                 budget_bulk_updates,
+                placement_bulk_updates,
             ],
             ignore_index=True,
         )
@@ -3053,9 +3158,9 @@ class _Phase2BaseOptimizer:
         if bid <= 0:
             return 0.0
         if action == 'INCREASE_BID':
-            bid = min(self.max_bid_cap, bid * (1 + self.max_bid_up))
+            bid = round_bid_value(bid * (1 + self.max_bid_up), self.max_bid_cap)
         elif action == 'DECREASE_BID':
-            bid = max(0.02, bid * (1 - self.max_bid_down))
+            bid = round_bid_value(bid * (1 - self.max_bid_down), self.max_bid_cap)
         return round(bid, 2)
 
     def _adjust_budget(self, current_budget, action):
@@ -3063,9 +3168,9 @@ class _Phase2BaseOptimizer:
         if budget <= 0:
             return 0.0
         if action == 'INCREASE_BUDGET':
-            budget = min(self.max_budget_cap, budget * (1 + self.budget_up_pct))
+            budget = round_budget_value(budget * (1 + self.budget_up_pct), self.max_budget_cap)
         elif action == 'DECREASE_BUDGET':
-            budget = max(1.0, budget * (1 - self.budget_down_pct))
+            budget = round_budget_value(budget * (1 - self.budget_down_pct), self.max_budget_cap)
         return round(budget, 2)
 
 class SponsoredBrandsOptimizer(_Phase2BaseOptimizer):
