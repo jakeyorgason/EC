@@ -960,21 +960,30 @@ class AdsOptimizerEngine:
         merged_hist["last_action_days_ago"] = (latest_ts - merged_hist["last_action_ts"]).dt.days
 
         out["signature"] = out.apply(lambda r: self.get_history_signature(r, level=level), axis=1)
-        out = out.merge(
-            merged_hist[
-                [
-                    "signature", "recent_action_count", "last_action_days_ago",
-                    "roas", "clicks", "orders", "score", "prior_action_direction"
-                ]
-            ].rename(columns={
-                "roas": "previous_roas",
-                "clicks": "previous_clicks",
-                "orders": "previous_orders",
-                "score": "previous_score",
-            }),
-            on="signature",
-            how="left",
-        )
+
+        history_features = merged_hist[
+            [
+                "signature", "recent_action_count", "last_action_days_ago",
+                "roas", "clicks", "orders", "score", "prior_action_direction"
+            ]
+        ].rename(columns={
+            "roas": "previous_roas",
+            "clicks": "previous_clicks",
+            "orders": "previous_orders",
+            "score": "previous_score",
+        })
+
+        # Remove default placeholders before merge so pandas does not create _x / _y suffixes.
+        overlap_cols = [
+            "recent_action_count", "last_action_days_ago", "previous_roas",
+            "previous_clicks", "previous_orders", "previous_score", "prior_action_direction"
+        ]
+        drop_cols = [c for c in overlap_cols if c in out.columns]
+        if drop_cols:
+            out = out.drop(columns=drop_cols)
+
+        out = out.merge(history_features, on="signature", how="left")
+        out = ensure_trend_columns(out)
 
         out["recent_action_count"] = pd.to_numeric(out["recent_action_count"], errors="coerce").fillna(0)
         out["cooldown_active"] = out["recent_action_count"] > 0
