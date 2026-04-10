@@ -226,6 +226,61 @@ DEFAULT_BRAND_TERMS = {
 def normalize_entity_id(value):
     return str(value or "").strip().replace(".0", "")
 
+
+import re
+
+def canonicalize_term(term):
+    term = str(term or "").lower().strip()
+    term = re.sub(r"[^a-z0-9\s]", "", term)
+    term = re.sub(r"\s+", " ", term)
+
+    words = []
+    for w in term.split():
+        if len(w) > 3 and w.endswith("s"):
+            w = w[:-1]
+        words.append(w)
+
+    return " ".join(words).strip()
+
+
+def levenshtein_distance(a, b):
+    a = str(a or "")
+    b = str(b or "")
+    if a == b:
+        return 0
+    if len(a) == 0:
+        return len(b)
+    if len(b) == 0:
+        return len(a)
+
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        curr = [i]
+        for j, cb in enumerate(b, start=1):
+            ins = curr[j - 1] + 1
+            delete = prev[j] + 1
+            sub = prev[j - 1] + (0 if ca == cb else 1)
+            curr.append(min(ins, delete, sub))
+        prev = curr
+    return prev[-1]
+
+
+def is_semantic_duplicate(term_a, term_b):
+    a = canonicalize_term(term_a)
+    b = canonicalize_term(term_b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if a in b or b in a:
+        return True
+
+    # allow one edit for close brand typos like ador/ardor
+    if abs(len(a) - len(b)) <= 1 and levenshtein_distance(a, b) <= 1:
+        return True
+
+    return False
+
 def normalize_key(value):
     return " ".join(str(value or "").strip().lower().split())
 
@@ -2858,6 +2913,7 @@ class AdsOptimizerEngine:
             .str.strip()
             .str.replace(r"\s+", " ", regex=True)
         )
+        actionable["canonical_term"] = actionable["search_term"].apply(canonicalize_term)
 
         actionable["campaign_name_norm"] = (
             actionable["campaign_name"]
@@ -2883,7 +2939,6 @@ class AdsOptimizerEngine:
         if actionable.empty:
             return pd.DataFrame()
 
-        # Require a minimum proof threshold before harvest
         if "orders" in actionable.columns:
             actionable["orders"] = pd.to_numeric(actionable["orders"], errors="coerce").fillna(0)
             actionable = actionable[actionable["orders"] >= 2].copy()
@@ -2896,7 +2951,7 @@ class AdsOptimizerEngine:
             + "||"
             + actionable["ad_group_id_norm"]
             + "||"
-            + actionable["normalized_term"]
+            + actionable["canonical_term"]
             + "||exact"
         )
         actionable["exact_dupe_key_name"] = (
@@ -2904,7 +2959,7 @@ class AdsOptimizerEngine:
             + "||"
             + actionable["ad_group_name_norm"]
             + "||"
-            + actionable["normalized_term"]
+            + actionable["canonical_term"]
             + "||exact"
         )
         actionable["memory_key"] = (
@@ -2912,11 +2967,12 @@ class AdsOptimizerEngine:
             + "||"
             + actionable["ad_group_name_norm"]
             + "||"
-            + actionable["normalized_term"]
+            + actionable["canonical_term"]
         )
 
         existing_exact_keys_id = set()
         existing_exact_keys_name = set()
+        existing_exact_terms_by_group = {}
 
         if hasattr(self, "bulk_df") and self.bulk_df is not None and not self.bulk_df.empty:
             bulk = self.bulk_df.copy()
@@ -2942,6 +2998,7 @@ class AdsOptimizerEngine:
                         .str.strip()
                         .str.replace(r"\s+", " ", regex=True)
                     )
+                    exact_rows["canonical_term"] = exact_rows["Keyword Text"].apply(canonicalize_term)
                     exact_rows["normalized_match"] = (
                         exact_rows["Match Type"]
                         .fillna("")
@@ -2957,7 +3014,7 @@ class AdsOptimizerEngine:
                         + "||"
                         + exact_rows["ad_group_id_norm"]
                         + "||"
-                        + exact_rows["normalized_term"]
+                        + exact_rows["canonical_term"]
                         + "||exact"
                     )
                     existing_exact_keys_name = set(
@@ -2965,27 +3022,49 @@ class AdsOptimizerEngine:
                         + "||"
                         + exact_rows["ad_group_name_norm"]
                         + "||"
-                        + exact_rows["normalized_term"]
+                        + exact_rows["canonical_term"]
                         + "||exact"
                     )
+
+                    for _, r in exact_rows.iterrows():
+                        group_key = r["campaign_name_norm"] + "||" + r["ad_group_name_norm"]
+                        existing_exact_terms_by_group.setdefault(group_key, set()).add(r["canonical_term"])
 
         actionable = actionable[
             ~actionable["exact_dupe_key_id"].isin(existing_exact_keys_id)
             & ~actionable["exact_dupe_key_name"].isin(existing_exact_keys_name)
         ].copy()
 
-        # Extra safety using legacy cache if available
         if hasattr(self, "existing_any_keywords") and self.existing_any_keywords:
             actionable["legacy_name_key"] = (
                 actionable["campaign_name_norm"] + "||" + actionable["ad_group_name_norm"] + "||" + actionable["normalized_term"]
             )
             actionable = actionable[~actionable["legacy_name_key"].isin(self.existing_any_keywords)].copy()
 
-        # Persistent/session memory to stop repeat harvest attempts across runs
         actionable = actionable[~actionable["memory_key"].isin(self.harvested_exact_memory)].copy()
 
+        if actionable.empty:
+            return pd.DataFrame()
+
+        # semantic duplicate suppression within each campaign/ad group
+        keep_indices = []
+        for idx, row in actionable.iterrows():
+            group_key = row["campaign_name_norm"] + "||" + row["ad_group_name_norm"]
+            candidate_term = row["canonical_term"]
+
+            existing_terms = existing_exact_terms_by_group.get(group_key, set())
+            if any(is_semantic_duplicate(candidate_term, existing_term) for existing_term in existing_terms):
+                continue
+
+            if any(is_semantic_duplicate(candidate_term, actionable.loc[k, "canonical_term"]) for k in keep_indices):
+                continue
+
+            keep_indices.append(idx)
+
+        actionable = actionable.loc[keep_indices].copy()
+
         actionable = actionable.drop_duplicates(
-            subset=["campaign_id_norm", "ad_group_id_norm", "normalized_term"],
+            subset=["campaign_id_norm", "ad_group_id_norm", "canonical_term"],
             keep="first",
         )
 
