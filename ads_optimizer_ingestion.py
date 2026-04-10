@@ -272,21 +272,26 @@ def is_semantic_duplicate(term_a, term_b):
         return False
     if a == b:
         return True
-    if a in b or b in a:
+
+    # Only treat full phrase containment as duplicate when lengths are nearly identical.
+    # This avoids suppressing healthy expansions like singular/plural or longer-tail variants.
+    if (a in b or b in a) and abs(len(a) - len(b)) <= 1:
         return True
 
-    # word-level fuzzy matching for close brand typos and singular/plural drift
     a_words = a.split()
     b_words = b.split()
+
+    # Brand-style typo protection only for short tokens.
+    # Example: ador vs ardor should be blocked, but drink vs drinks should still be allowed.
     for aw in a_words:
         for bw in b_words:
             if aw == bw:
                 continue
-            if levenshtein_distance(aw, bw) <= 1:
+            if len(aw) <= 5 and len(bw) <= 6 and levenshtein_distance(aw, bw) <= 1:
                 return True
 
-    # allow slightly broader fuzzy matching at phrase level for Amazon duplicate behavior
-    if levenshtein_distance(a, b) <= 2:
+    # Very conservative phrase-level fuzziness for very short terms only.
+    if len(a) <= 6 and len(b) <= 6 and levenshtein_distance(a, b) <= 1:
         return True
 
     return False
