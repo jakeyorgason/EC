@@ -812,15 +812,15 @@ def apply_ai_overrides_to_combined(
                 if source_type == "bid" and new_action in {"INCREASE_BID", "DECREASE_BID"} and current_bid > 0:
                     final_action = new_action
                     if new_action == "INCREASE_BID":
-                        row_dict["Bid"] = round(min(current_bid * (1 + strategy["max_bid_up"]), max_bid_cap), 2)
+                        row_dict["Bid"] = round_bid_value(current_bid * (1 + strategy["max_bid_up"]), max_bid_cap)
                     else:
-                        row_dict["Bid"] = round(max(current_bid * (1 - strategy["max_bid_down"]), 0.02), 2)
+                        row_dict["Bid"] = round_bid_value(current_bid * (1 - strategy["max_bid_down"]), max_bid_cap)
                 elif source_type == "budget" and new_action in {"INCREASE_BUDGET", "DECREASE_BUDGET"} and current_budget > 0:
                     final_action = new_action
                     if new_action == "INCREASE_BUDGET":
-                        row_dict["Daily Budget"] = round(min(current_budget * (1 + strategy["budget_up_pct"]), max_budget_cap), 2)
+                        row_dict["Daily Budget"] = round_budget_value(current_budget * (1 + strategy["budget_up_pct"]), max_budget_cap)
                     else:
-                        row_dict["Daily Budget"] = round(max(current_budget * (1 - strategy["budget_down_pct"]), 1.00), 2)
+                        row_dict["Daily Budget"] = round_budget_value(current_budget * (1 - strategy["budget_down_pct"]), max_budget_cap)
                 elif source_type == "search_harvest" and new_action == "HARVEST_TO_EXACT":
                     final_action = new_action
                 elif source_type == "negative_keyword" and new_action == "ADD_NEGATIVE_PHRASE":
