@@ -38,10 +38,9 @@ BULK_EXPORT_COLUMNS = [
     "Bid",
     "Budget",
     "Daily Budget",
-    "Optimizer Action",
-    "Confidence",
-    "Score",
-    "Reason",
+    "Placement Type",
+    "Placement %",
+    "Portfolio ID",
 ]
 
 
@@ -124,37 +123,47 @@ def display_df(df: pd.DataFrame, preferred: Optional[list[str]] = None, height: 
     st.dataframe(out, use_container_width=True, height=height)
 
 
-def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    export_df = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-    if export_df.empty:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            pd.DataFrame().to_excel(writer, index=False, sheet_name="Output")
-        return output.getvalue()
+def clean_bulk_output(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=BULK_EXPORT_COLUMNS)
 
-    export_df.columns = [str(c).strip() for c in export_df.columns]
+    out = df.copy()
+    out.columns = [str(c).strip() for c in out.columns]
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
 
-    # First hard dedupe by header name
-    export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
+    valid_cols = [c for c in BULK_EXPORT_COLUMNS if c in out.columns]
+    out = out[valid_cols].copy()
 
-    approved_cols = []
-    seen = set()
+    # Normalize empty required columns if present in schema but absent in source
     for col in BULK_EXPORT_COLUMNS:
-        if col in export_df.columns and col not in seen:
-            approved_cols.append(col)
-            seen.add(col)
+        if col not in out.columns:
+            out[col] = ""
 
-    remaining_cols = []
-    for col in export_df.columns:
-        if col not in seen:
-            remaining_cols.append(col)
-            seen.add(col)
+    out = out[BULK_EXPORT_COLUMNS].copy()
 
-    export_df = export_df[approved_cols + remaining_cols].copy()
+    # Amazon-safe formatting
+    text_cols = [
+        "Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+        "Product Targeting ID", "Campaign Name", "Ad Group Name", "State",
+        "Keyword Text", "Match Type", "Placement Type", "Portfolio ID"
+    ]
+    for col in text_cols:
+        if col in out.columns:
+            out[col] = out[col].fillna("").astype(str).str.replace(r"\.0$", "", regex=True)
 
-    # Final hard dedupe again after reordering
-    export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
+    numeric_cols = ["Bid", "Budget", "Daily Budget", "Placement %"]
+    for col in numeric_cols:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    # Clear NaN back to blank cells for upload format
+    out = out.where(pd.notna(out), "")
+
+    return out.reset_index(drop=True)
+
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    export_df = clean_bulk_output(df)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -164,30 +173,10 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 def product_bulk_slice(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
     if df is None or df.empty or "Product" not in df.columns:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=BULK_EXPORT_COLUMNS)
 
     out = df[df["Product"].astype(str).str.strip() == product_name].copy()
-    out.columns = [str(c).strip() for c in out.columns]
-
-    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
-
-    approved_cols = []
-    seen = set()
-    for col in BULK_EXPORT_COLUMNS:
-        if col in out.columns and col not in seen:
-            approved_cols.append(col)
-            seen.add(col)
-
-    remaining_cols = []
-    for col in out.columns:
-        if col not in seen:
-            remaining_cols.append(col)
-            seen.add(col)
-
-    out = out[approved_cols + remaining_cols].copy()
-    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
-
-    return out.reset_index(drop=True)
+    return clean_bulk_output(out)
 
 
 def load_logo_path() -> Optional[str]:
