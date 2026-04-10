@@ -3273,14 +3273,27 @@ class AdsOptimizerEngine:
     # SIMULATION SUMMARY
     # -----------------------------
     def build_simulation_summary(self, combined_bulk_updates, account_health):
-        bid_increases = int((combined_bulk_updates["Optimizer Action"] == "INCREASE_BID").sum())
-        bid_decreases = int((combined_bulk_updates["Optimizer Action"] == "DECREASE_BID").sum())
-        negatives_added = int((combined_bulk_updates["Optimizer Action"] == "ADD_NEGATIVE_PHRASE").sum())
-        harvested_keywords = int((combined_bulk_updates["Optimizer Action"] == "HARVEST_TO_EXACT").sum())
-        budget_increases = int((combined_bulk_updates["Optimizer Action"] == "INCREASE_BUDGET").sum())
-        budget_decreases = int((combined_bulk_updates["Optimizer Action"] == "DECREASE_BUDGET").sum())
-        high_conf = int((combined_bulk_updates.get("Confidence", pd.Series(dtype=str)) == "HIGH").sum()) if isinstance(combined_bulk_updates, pd.DataFrame) else 0
-        low_conf = int((combined_bulk_updates.get("Confidence", pd.Series(dtype=str)) == "LOW").sum()) if isinstance(combined_bulk_updates, pd.DataFrame) else 0
+        if combined_bulk_updates is None or not isinstance(combined_bulk_updates, pd.DataFrame):
+            combined_bulk_updates = pd.DataFrame()
+
+        if "Optimizer Action" not in combined_bulk_updates.columns:
+            combined_bulk_updates = combined_bulk_updates.copy()
+            combined_bulk_updates["Optimizer Action"] = ""
+
+        actions = combined_bulk_updates["Optimizer Action"].fillna("").astype(str).str.upper()
+
+        bid_increases = int((actions == "INCREASE_BID").sum())
+        bid_decreases = int((actions == "DECREASE_BID").sum())
+        negatives_added = int((actions == "ADD_NEGATIVE_PHRASE").sum())
+        harvested_keywords = int((actions == "HARVEST_TO_EXACT").sum())
+        budget_increases = int((actions == "INCREASE_BUDGET").sum())
+        budget_decreases = int((actions == "DECREASE_BUDGET").sum())
+
+        confidence_series = combined_bulk_updates.get("Confidence", pd.Series(dtype=str))
+        confidence_series = confidence_series.fillna("").astype(str).str.upper()
+
+        high_conf = int((confidence_series == "HIGH").sum())
+        low_conf = int((confidence_series == "LOW").sum())
 
         estimated_spend_impact_pct = round(
             (bid_increases * self.max_bid_up * 100)
@@ -3290,12 +3303,6 @@ class AdsOptimizerEngine:
             2,
         )
 
-        simulation_mode = "Balanced Simulation"
-        if estimated_spend_impact_pct >= 10:
-            simulation_mode = "Growth Simulation"
-        elif estimated_spend_impact_pct <= -10:
-            simulation_mode = "Efficiency Simulation"
-
         return {
             "bid_increases": bid_increases,
             "bid_decreases": bid_decreases,
@@ -3303,22 +3310,14 @@ class AdsOptimizerEngine:
             "harvested_keywords": harvested_keywords,
             "budget_increases": budget_increases,
             "budget_decreases": budget_decreases,
-            "estimated_spend_impact_pct": estimated_spend_impact_pct,
-            "account_roas": account_health["account_roas"],
-            "waste_spend": account_health["waste_spend"],
-            "waste_spend_pct": account_health["waste_spend_pct"],
-            "health_status": account_health["health_status"],
-            "adjusted_min_roas": account_health["adjusted_min_roas"],
-            "tacos_pct": account_health["tacos_pct"],
-            "tacos_status": account_health["tacos_status"],
             "high_confidence_actions": high_conf,
             "low_confidence_actions": low_conf,
-            "simulation_mode": simulation_mode,
+            "estimated_spend_impact_pct": estimated_spend_impact_pct,
+            "account_health_status": account_health.get("health_status", "unknown")
+            if isinstance(account_health, dict)
+            else "unknown",
         }
 
-    # -----------------------------
-    # PROCESS
-    # -----------------------------
     def process(self):
         self.load_reports()
 
