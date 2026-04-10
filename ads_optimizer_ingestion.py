@@ -275,8 +275,18 @@ def is_semantic_duplicate(term_a, term_b):
     if a in b or b in a:
         return True
 
-    # allow one edit for close brand typos like ador/ardor
-    if abs(len(a) - len(b)) <= 1 and levenshtein_distance(a, b) <= 1:
+    # word-level fuzzy matching for close brand typos and singular/plural drift
+    a_words = a.split()
+    b_words = b.split()
+    for aw in a_words:
+        for bw in b_words:
+            if aw == bw:
+                continue
+            if levenshtein_distance(aw, bw) <= 1:
+                return True
+
+    # allow slightly broader fuzzy matching at phrase level for Amazon duplicate behavior
+    if levenshtein_distance(a, b) <= 2:
         return True
 
     return False
