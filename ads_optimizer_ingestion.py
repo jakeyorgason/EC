@@ -223,6 +223,13 @@ DEFAULT_BRAND_TERMS = {
 
 
 
+
+def get_default_rejected_harvest_keys():
+    return {
+        "243073361750245||187450447764615||ador energy drink",
+        "243073361750245||187450447764615||energy drinks",
+    }
+
 def normalize_entity_id(value):
     return str(value or "").strip().replace(".0", "")
 
@@ -273,16 +280,10 @@ def is_semantic_duplicate(term_a, term_b):
     if a == b:
         return True
 
-    # Only treat full phrase containment as duplicate when lengths are nearly identical.
-    # This avoids suppressing healthy expansions like singular/plural or longer-tail variants.
-    if (a in b or b in a) and abs(len(a) - len(b)) <= 1:
-        return True
-
     a_words = a.split()
     b_words = b.split()
 
-    # Brand-style typo protection only for short tokens.
-    # Example: ador vs ardor should be blocked, but drink vs drinks should still be allowed.
+    # Only protect against obvious short-token brand typos.
     for aw in a_words:
         for bw in b_words:
             if aw == bw:
@@ -290,7 +291,7 @@ def is_semantic_duplicate(term_a, term_b):
             if len(aw) <= 5 and len(bw) <= 6 and levenshtein_distance(aw, bw) <= 1:
                 return True
 
-    # Very conservative phrase-level fuzziness for very short terms only.
+    # Very conservative phrase-level fuzziness for very short whole terms only.
     if len(a) <= 6 and len(b) <= 6 and levenshtein_distance(a, b) <= 1:
         return True
 
@@ -2906,6 +2907,8 @@ class AdsOptimizerEngine:
     def generate_harvest_bulk_updates(self, search_term_actions_df):
         if not hasattr(self, "harvested_exact_memory"):
             self.harvested_exact_memory = set()
+        if not hasattr(self, "rejected_harvest_memory"):
+            self.rejected_harvest_memory = set(get_default_rejected_harvest_keys())
 
         actionable = search_term_actions_df[
             search_term_actions_df["search_term_action"] == "HARVEST_TO_EXACT"
@@ -2984,10 +2987,16 @@ class AdsOptimizerEngine:
             + "||"
             + actionable["canonical_term"]
         )
+        actionable["rejected_key"] = (
+            actionable["campaign_id_norm"]
+            + "||"
+            + actionable["ad_group_id_norm"]
+            + "||"
+            + actionable["normalized_term"]
+        )
 
         existing_exact_keys_id = set()
         existing_exact_keys_name = set()
-        existing_exact_terms_by_group = {}
 
         if hasattr(self, "bulk_df") and self.bulk_df is not None and not self.bulk_df.empty:
             bulk = self.bulk_df.copy()
@@ -3005,14 +3014,6 @@ class AdsOptimizerEngine:
                     exact_rows["ad_group_id_norm"] = exact_rows["Ad Group ID"].map(normalize_entity_id)
                     exact_rows["campaign_name_norm"] = exact_rows["Campaign Name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
                     exact_rows["ad_group_name_norm"] = exact_rows["Ad Group Name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
-                    exact_rows["normalized_term"] = (
-                        exact_rows["Keyword Text"]
-                        .fillna("")
-                        .astype(str)
-                        .str.lower()
-                        .str.strip()
-                        .str.replace(r"\s+", " ", regex=True)
-                    )
                     exact_rows["canonical_term"] = exact_rows["Keyword Text"].apply(canonicalize_term)
                     exact_rows["normalized_match"] = (
                         exact_rows["Match Type"]
@@ -3041,10 +3042,6 @@ class AdsOptimizerEngine:
                         + "||exact"
                     )
 
-                    for _, r in exact_rows.iterrows():
-                        group_key = r["campaign_name_norm"] + "||" + r["ad_group_name_norm"]
-                        existing_exact_terms_by_group.setdefault(group_key, set()).add(r["canonical_term"])
-
         actionable = actionable[
             ~actionable["exact_dupe_key_id"].isin(existing_exact_keys_id)
             & ~actionable["exact_dupe_key_name"].isin(existing_exact_keys_name)
@@ -3057,24 +3054,35 @@ class AdsOptimizerEngine:
             actionable = actionable[~actionable["legacy_name_key"].isin(self.existing_any_keywords)].copy()
 
         actionable = actionable[~actionable["memory_key"].isin(self.harvested_exact_memory)].copy()
+        actionable = actionable[~actionable["rejected_key"].isin(self.rejected_harvest_memory)].copy()
 
         if actionable.empty:
             return pd.DataFrame()
 
-        # semantic duplicate suppression within each campaign/ad group
+        # Only suppress obvious short-token typo duplicates within same ad group, not broader expansions.
         keep_indices = []
         for idx, row in actionable.iterrows():
-            group_key = row["campaign_name_norm"] + "||" + row["ad_group_name_norm"]
+            group_rows = actionable.loc[keep_indices]
+            if group_rows.empty:
+                keep_indices.append(idx)
+                continue
+
+            same_group = group_rows[
+                (group_rows["campaign_id_norm"] == row["campaign_id_norm"])
+                & (group_rows["ad_group_id_norm"] == row["ad_group_id_norm"])
+            ]
+            if same_group.empty:
+                keep_indices.append(idx)
+                continue
+
             candidate_term = row["canonical_term"]
-
-            existing_terms = existing_exact_terms_by_group.get(group_key, set())
-            if any(is_semantic_duplicate(candidate_term, existing_term) for existing_term in existing_terms):
-                continue
-
-            if any(is_semantic_duplicate(candidate_term, actionable.loc[k, "canonical_term"]) for k in keep_indices):
-                continue
-
-            keep_indices.append(idx)
+            dup_found = False
+            for _, existing_row in same_group.iterrows():
+                if is_semantic_duplicate(candidate_term, existing_row["canonical_term"]):
+                    dup_found = True
+                    break
+            if not dup_found:
+                keep_indices.append(idx)
 
         actionable = actionable.loc[keep_indices].copy()
 
@@ -3086,8 +3094,6 @@ class AdsOptimizerEngine:
         if actionable.empty:
             return pd.DataFrame()
 
-        if not hasattr(self, "harvested_exact_memory"):
-            self.harvested_exact_memory = set()
         self.harvested_exact_memory.update(actionable["memory_key"].tolist())
 
         bulk = pd.DataFrame(index=actionable.index)
