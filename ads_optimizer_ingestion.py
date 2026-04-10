@@ -222,6 +222,10 @@ DEFAULT_BRAND_TERMS = {
 }
 
 
+
+def normalize_entity_id(value):
+    return str(value or "").strip().replace(".0", "")
+
 def normalize_key(value):
     return " ".join(str(value or "").strip().lower().split())
 
@@ -2837,12 +2841,11 @@ class AdsOptimizerEngine:
         if actionable.empty:
             return pd.DataFrame()
 
-        actionable = actionable[
-            actionable["campaign_id"].fillna("").astype(str).str.strip() != ""
-        ]
-        actionable = actionable[
-            actionable["ad_group_id"].fillna("").astype(str).str.strip() != ""
-        ]
+        actionable["campaign_id_norm"] = actionable["campaign_id"].map(normalize_entity_id)
+        actionable["ad_group_id_norm"] = actionable["ad_group_id"].map(normalize_entity_id)
+
+        actionable = actionable[actionable["campaign_id_norm"] != ""]
+        actionable = actionable[actionable["ad_group_id_norm"] != ""]
 
         actionable["normalized_term"] = (
             actionable["search_term"]
@@ -2853,43 +2856,52 @@ class AdsOptimizerEngine:
             .str.replace(r"\s+", " ", regex=True)
         )
 
-        actionable["ad_group_key"] = (
-            actionable["campaign_name"].fillna("").astype(str).str.lower().str.strip()
-            + "||"
-            + actionable["ad_group_name"].fillna("").astype(str).str.lower().str.strip()
-        )
+        actionable["campaign_name_norm"] = actionable["campaign_name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
+        actionable["ad_group_name_norm"] = actionable["ad_group_name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
 
+        actionable["ad_group_key"] = actionable["campaign_name_norm"] + "||" + actionable["ad_group_name_norm"]
         actionable = actionable[actionable["normalized_term"] != ""]
         actionable = actionable[actionable["ad_group_key"].isin(self.keyword_capable_ad_groups)]
 
         if actionable.empty:
             return pd.DataFrame()
 
-        actionable["exact_dupe_key"] = (
-            actionable["campaign_id"].astype(str).str.strip()
+        actionable["exact_dupe_key_id"] = (
+            actionable["campaign_id_norm"]
             + "||"
-            + actionable["ad_group_id"].astype(str).str.strip()
+            + actionable["ad_group_id_norm"]
+            + "||"
+            + actionable["normalized_term"]
+            + "||exact"
+        )
+        actionable["exact_dupe_key_name"] = (
+            actionable["campaign_name_norm"]
+            + "||"
+            + actionable["ad_group_name_norm"]
             + "||"
             + actionable["normalized_term"]
             + "||exact"
         )
 
-        existing_exact_keys = set()
+        existing_exact_keys_id = set()
+        existing_exact_keys_name = set()
 
         if hasattr(self, "bulk_df") and self.bulk_df is not None and not self.bulk_df.empty:
             bulk = self.bulk_df.copy()
             bulk.columns = [str(c).strip() for c in bulk.columns]
 
             if "Entity" in bulk.columns:
-                exact_rows = bulk[
-                    bulk["Entity"].astype(str).str.strip().eq("Keyword")
-                ].copy()
+                exact_rows = bulk[bulk["Entity"].astype(str).str.strip().eq("Keyword")].copy()
 
                 if not exact_rows.empty:
-                    for required_col in ["Campaign ID", "Ad Group ID", "Keyword Text", "Match Type"]:
+                    for required_col in ["Campaign ID", "Ad Group ID", "Keyword Text", "Match Type", "Campaign Name", "Ad Group Name"]:
                         if required_col not in exact_rows.columns:
                             exact_rows[required_col] = ""
 
+                    exact_rows["campaign_id_norm"] = exact_rows["Campaign ID"].map(normalize_entity_id)
+                    exact_rows["ad_group_id_norm"] = exact_rows["Ad Group ID"].map(normalize_entity_id)
+                    exact_rows["campaign_name_norm"] = exact_rows["Campaign Name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
+                    exact_rows["ad_group_name_norm"] = exact_rows["Ad Group Name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
                     exact_rows["normalized_term"] = (
                         exact_rows["Keyword Text"]
                         .fillna("")
@@ -2898,7 +2910,6 @@ class AdsOptimizerEngine:
                         .str.strip()
                         .str.replace(r"\s+", " ", regex=True)
                     )
-
                     exact_rows["normalized_match"] = (
                         exact_rows["Match Type"]
                         .fillna("")
@@ -2909,19 +2920,37 @@ class AdsOptimizerEngine:
 
                     exact_rows = exact_rows[exact_rows["normalized_match"] == "exact"].copy()
 
-                    existing_exact_keys = set(
-                        exact_rows["Campaign ID"].fillna("").astype(str).str.strip()
+                    existing_exact_keys_id = set(
+                        exact_rows["campaign_id_norm"]
                         + "||"
-                        + exact_rows["Ad Group ID"].fillna("").astype(str).str.strip()
+                        + exact_rows["ad_group_id_norm"]
+                        + "||"
+                        + exact_rows["normalized_term"]
+                        + "||exact"
+                    )
+                    existing_exact_keys_name = set(
+                        exact_rows["campaign_name_norm"]
+                        + "||"
+                        + exact_rows["ad_group_name_norm"]
                         + "||"
                         + exact_rows["normalized_term"]
                         + "||exact"
                     )
 
-        actionable = actionable[~actionable["exact_dupe_key"].isin(existing_exact_keys)].copy()
+        actionable = actionable[
+            ~actionable["exact_dupe_key_id"].isin(existing_exact_keys_id)
+            & ~actionable["exact_dupe_key_name"].isin(existing_exact_keys_name)
+        ].copy()
+
+        # Extra safety using legacy cache if available
+        if hasattr(self, "existing_any_keywords") and self.existing_any_keywords:
+            actionable["legacy_name_key"] = (
+                actionable["campaign_name_norm"] + "||" + actionable["ad_group_name_norm"] + "||" + actionable["normalized_term"]
+            )
+            actionable = actionable[~actionable["legacy_name_key"].isin(self.existing_any_keywords)].copy()
 
         actionable = actionable.drop_duplicates(
-            subset=["campaign_id", "ad_group_id", "normalized_term"],
+            subset=["campaign_id_norm", "ad_group_id_norm", "normalized_term"],
             keep="first",
         )
 
@@ -2932,8 +2961,8 @@ class AdsOptimizerEngine:
         bulk["Product"] = "Sponsored Products"
         bulk["Entity"] = "Keyword"
         bulk["Operation"] = "Create"
-        bulk["Campaign ID"] = actionable["campaign_id"]
-        bulk["Ad Group ID"] = actionable["ad_group_id"]
+        bulk["Campaign ID"] = actionable["campaign_id_norm"]
+        bulk["Ad Group ID"] = actionable["ad_group_id_norm"]
         bulk["Keyword ID"] = ""
         bulk["Campaign Name"] = actionable["campaign_name"]
         bulk["Ad Group Name"] = actionable["ad_group_name"]
