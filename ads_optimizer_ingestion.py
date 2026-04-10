@@ -100,6 +100,40 @@ def ensure_score_column(df: pd.DataFrame) -> pd.DataFrame:
     out["score"] = pd.to_numeric(out["score"], errors="coerce").fillna(0.0)
     return out
 
+
+def ensure_trend_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Guarantee trend/memory columns exist so diagnostics and processing never fail."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    defaults = {
+        "recent_action_count": 0,
+        "prior_action_direction": "",
+        "cooldown_active": False,
+        "last_action_days_ago": 999,
+        "previous_roas": 0.0,
+        "previous_clicks": 0.0,
+        "previous_orders": 0.0,
+        "previous_score": 0.0,
+        "roas_trend": "flat",
+        "click_trend": "flat",
+        "order_trend": "flat",
+    }
+
+    for col, default in defaults.items():
+        if col not in out.columns:
+            out[col] = default
+
+    out["recent_action_count"] = pd.to_numeric(out["recent_action_count"], errors="coerce").fillna(0).astype(int)
+    out["last_action_days_ago"] = pd.to_numeric(out["last_action_days_ago"], errors="coerce").fillna(999)
+    for col in ["previous_roas", "previous_clicks", "previous_orders", "previous_score"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    out["cooldown_active"] = out["cooldown_active"].fillna(False).astype(bool)
+
+    return out
+
 def _dedupe_and_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize headers and keep the first occurrence of any duplicate column names."""
     if df is None or not isinstance(df, pd.DataFrame):
@@ -942,7 +976,7 @@ class AdsOptimizerEngine:
             how="left",
         )
 
-        out["recent_action_count"] = out["recent_action_count"].fillna(0)
+        out["recent_action_count"] = pd.to_numeric(out["recent_action_count"], errors="coerce").fillna(0)
         out["cooldown_active"] = out["recent_action_count"] > 0
         out["roas_trend"] = out.apply(
             lambda r: trend_direction(r.get("roas", 0), r.get("previous_roas", 0), self.trend_change_tolerance),
@@ -1620,25 +1654,26 @@ class AdsOptimizerEngine:
             joined_targeting,
             adjusted_min_roas,
         )
-        bid_recommendations = ensure_score_column(bid_recommendations)
+        bid_recommendations = ensure_trend_columns(ensure_score_column(bid_recommendations))
 
         search_term_actions = self.build_search_term_actions(
             search_terms,
             adjusted_min_roas,
         )
-        search_term_actions = ensure_score_column(search_term_actions)
+        search_term_actions = ensure_trend_columns(ensure_score_column(search_term_actions))
 
         campaign_budget_actions = self.build_campaign_budget_actions(
             targeting_with_share,
             bulk_campaigns,
             adjusted_min_roas,
         )
-        campaign_budget_actions = ensure_score_column(campaign_budget_actions)
+        campaign_budget_actions = ensure_trend_columns(ensure_score_column(campaign_budget_actions))
 
         campaign_health_dashboard = self.build_campaign_health_dashboard(
             targeting_with_share,
             adjusted_min_roas,
         )
+        campaign_health_dashboard = ensure_trend_columns(ensure_score_column(campaign_health_dashboard))
 
         sqp_opportunities, sqp_summary = self.build_sqp_opportunities(
             sqp_df=sqp,
@@ -1668,10 +1703,10 @@ class AdsOptimizerEngine:
             "campaigns_waste_alert": int((campaign_health_dashboard["campaign_status"] == "Waste Alert").sum()),
         }
 
-        bid_recommendations = ensure_score_column(bid_recommendations)
-        search_term_actions = ensure_score_column(search_term_actions)
-        campaign_budget_actions = ensure_score_column(campaign_budget_actions)
-        top_opportunities = ensure_score_column(top_opportunities) if 'top_opportunities' in locals() else pd.DataFrame()
+        bid_recommendations = ensure_trend_columns(ensure_score_column(bid_recommendations))
+        search_term_actions = ensure_trend_columns(ensure_score_column(search_term_actions))
+        campaign_budget_actions = ensure_trend_columns(ensure_score_column(campaign_budget_actions))
+        top_opportunities = ensure_trend_columns(ensure_score_column(top_opportunities)) if 'top_opportunities' in locals() else pd.DataFrame()
 
         return {
             "account_health": account_health,
@@ -2915,20 +2950,20 @@ class AdsOptimizerEngine:
             joined_targeting,
             adjusted_min_roas,
         )
-        bid_recommendations = ensure_score_column(bid_recommendations)
+        bid_recommendations = ensure_trend_columns(ensure_score_column(bid_recommendations))
 
         search_term_actions = self.build_search_term_actions(
             search_terms,
             adjusted_min_roas,
         )
-        search_term_actions = ensure_score_column(search_term_actions)
+        search_term_actions = ensure_trend_columns(ensure_score_column(search_term_actions))
 
         campaign_budget_actions = self.build_campaign_budget_actions(
             targeting_with_share,
             bulk_campaigns,
             adjusted_min_roas,
         )
-        campaign_budget_actions = ensure_score_column(campaign_budget_actions)
+        campaign_budget_actions = ensure_trend_columns(ensure_score_column(campaign_budget_actions))
 
         portfolio_budget_reallocation_plan = self.build_portfolio_budget_reallocation_plan(campaign_budget_actions)
         if not portfolio_budget_reallocation_plan.empty:
@@ -2958,6 +2993,7 @@ class AdsOptimizerEngine:
             targeting_with_share,
             adjusted_min_roas,
         )
+        campaign_health_dashboard = ensure_trend_columns(ensure_score_column(campaign_health_dashboard))
 
         sqp_opportunities, sqp_summary = self.build_sqp_opportunities(
             sqp_df=sqp,
@@ -2987,11 +3023,11 @@ class AdsOptimizerEngine:
             "campaigns_waste_alert": int((campaign_health_dashboard["campaign_status"] == "Waste Alert").sum()),
         }
 
-        bid_recommendations = ensure_score_column(bid_recommendations)
+        bid_recommendations = ensure_trend_columns(ensure_score_column(bid_recommendations))
 
         top_opportunities = bid_recommendations[bid_recommendations["recommended_action"] == "INCREASE_BID"].copy()
         if not top_opportunities.empty:
-            top_opportunities = ensure_score_column(top_opportunities)
+            top_opportunities = ensure_trend_columns(ensure_score_column(top_opportunities))
             top_opportunities = top_opportunities.sort_values(by=["score", "roas", "orders"], ascending=[False, False, False]).head(25)
 
         self.save_run_history(simulation_summary, account_health)
@@ -2999,10 +3035,10 @@ class AdsOptimizerEngine:
         self.save_action_history(search_term_actions, entity_level="target")
         self.save_action_history(campaign_budget_actions, entity_level="campaign")
 
-        bid_recommendations = ensure_score_column(bid_recommendations)
-        search_term_actions = ensure_score_column(search_term_actions)
-        campaign_budget_actions = ensure_score_column(campaign_budget_actions)
-        top_opportunities = ensure_score_column(top_opportunities) if 'top_opportunities' in locals() else pd.DataFrame()
+        bid_recommendations = ensure_trend_columns(ensure_score_column(bid_recommendations))
+        search_term_actions = ensure_trend_columns(ensure_score_column(search_term_actions))
+        campaign_budget_actions = ensure_trend_columns(ensure_score_column(campaign_budget_actions))
+        top_opportunities = ensure_trend_columns(ensure_score_column(top_opportunities)) if 'top_opportunities' in locals() else pd.DataFrame()
 
         return {
             "bid_recommendations": bid_recommendations,
@@ -4784,9 +4820,9 @@ class Phase2AdsOrchestrator:
         execution_summary = exported_frames['execution_summary']
         optimizer_diagnostics = exported_frames['optimizer_diagnostics']
         combined_bulk_updates = exported_frames['combined_bulk_updates']
-        bid_recommendations = ensure_score_column(exported_frames['bid_recommendations'])
-        search_term_actions = ensure_score_column(exported_frames['search_term_actions'])
-        campaign_budget_actions = ensure_score_column(exported_frames['campaign_budget_actions'])
+        bid_recommendations = ensure_trend_columns(ensure_score_column(exported_frames['bid_recommendations']))
+        search_term_actions = ensure_trend_columns(ensure_score_column(exported_frames['search_term_actions']))
+        campaign_budget_actions = ensure_trend_columns(ensure_score_column(exported_frames['campaign_budget_actions']))
         spend_summary = validation.get('spend_summary', {})
         combined_account_summary['sp_total_spend'] = spend_summary.get('sp_spend', 0.0)
         combined_account_summary['sb_total_spend'] = spend_summary.get('sb_spend', 0.0)
