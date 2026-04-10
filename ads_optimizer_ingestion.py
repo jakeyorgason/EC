@@ -69,6 +69,22 @@ def safe_concat_frames(frames, ignore_index=True):
         return pd.DataFrame()
     return pd.concat(valid_frames, ignore_index=ignore_index)
 
+
+
+def ensure_numeric_score_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Guarantee a lowercase numeric score column so sorting never fails."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+
+    out = df.copy()
+    if "score" not in out.columns and "Score" in out.columns:
+        out["score"] = out["Score"]
+    if "score" not in out.columns:
+        out["score"] = 0.0
+
+    out["score"] = pd.to_numeric(out["score"], errors="coerce").fillna(0.0)
+    return out
+
 def _dedupe_and_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize headers and keep the first occurrence of any duplicate column names."""
     if df is None or not isinstance(df, pd.DataFrame):
@@ -2840,8 +2856,11 @@ class AdsOptimizerEngine:
             "campaigns_waste_alert": int((campaign_health_dashboard["campaign_status"] == "Waste Alert").sum()),
         }
 
+        bid_recommendations = ensure_numeric_score_column(bid_recommendations)
+
         top_opportunities = bid_recommendations[bid_recommendations["recommended_action"] == "INCREASE_BID"].copy()
         if not top_opportunities.empty:
+            top_opportunities = ensure_numeric_score_column(top_opportunities)
             top_opportunities = top_opportunities.sort_values(by=["score", "roas", "orders"], ascending=[False, False, False]).head(25)
 
         self.save_run_history(simulation_summary, account_health)
@@ -4629,9 +4648,9 @@ class Phase2AdsOrchestrator:
         execution_summary = exported_frames['execution_summary']
         optimizer_diagnostics = exported_frames['optimizer_diagnostics']
         combined_bulk_updates = exported_frames['combined_bulk_updates']
-        bid_recommendations = exported_frames['bid_recommendations']
-        search_term_actions = exported_frames['search_term_actions']
-        campaign_budget_actions = exported_frames['campaign_budget_actions']
+        bid_recommendations = ensure_numeric_score_column(exported_frames['bid_recommendations'])
+        search_term_actions = ensure_numeric_score_column(exported_frames['search_term_actions'])
+        campaign_budget_actions = ensure_numeric_score_column(exported_frames['campaign_budget_actions'])
         spend_summary = validation.get('spend_summary', {})
         combined_account_summary['sp_total_spend'] = spend_summary.get('sp_spend', 0.0)
         combined_account_summary['sb_total_spend'] = spend_summary.get('sb_spend', 0.0)
