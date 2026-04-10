@@ -300,6 +300,49 @@ def is_semantic_duplicate(term_a, term_b):
 
     return False
 
+
+def determine_launch_mode(
+    campaign_name="",
+    ad_group_name="",
+    clicks=0,
+    orders=0,
+    impressions=0,
+    spend=0.0,
+    sales=0.0,
+):
+    name_blob = f"{campaign_name} {ad_group_name}".lower()
+    explicit_launch_tokens = [
+        "launch", "ranking", "rank", "new product", "new launch", "launching", "test launch"
+    ]
+    if any(token in name_blob for token in explicit_launch_tokens):
+        return "launch"
+
+    clicks = float(clicks or 0)
+    orders = float(orders or 0)
+    impressions = float(impressions or 0)
+    spend = float(spend or 0)
+    sales = float(sales or 0)
+
+    if orders < 5 and (clicks < 40 or impressions < 5000 or spend < 150 or sales < 300):
+        return "launch"
+
+    return "mature"
+
+
+def safe_ctr(row):
+    ctr = row.get("ctr", None)
+    if ctr not in (None, ""):
+        try:
+            return float(ctr or 0)
+        except Exception:
+            pass
+
+    clicks = float(row.get("clicks", 0) or 0)
+    impressions = float(row.get("impressions", 0) or 0)
+    if impressions > 0:
+        return clicks / impressions
+    return 0.0
+
 def normalize_key(value):
     return " ".join(str(value or "").strip().lower().split())
 
@@ -695,6 +738,13 @@ class AdsOptimizerEngine:
         trend_lookback_days=21,
         trend_change_tolerance=0.10,
         brand_terms=None,
+        enable_launch_mode=True,
+        launch_click_harvest_threshold=5,
+        launch_ctr_harvest_threshold=0.003,
+        launch_negative_click_threshold=25,
+        launch_min_bid_floor=0.75,
+        launch_top_of_search_boost_pct=15,
+        launch_budget_raise_pct=0.15,
         branded_harvest_order_threshold=2,
         branded_scale_roas_floor=0.85,
         branded_negative_multiplier=1.50,
@@ -736,6 +786,13 @@ class AdsOptimizerEngine:
         self.trend_lookback_days = int(trend_lookback_days)
         self.trend_change_tolerance = float(trend_change_tolerance)
         self.brand_terms = [normalize_key(x) for x in (brand_terms or []) if normalize_key(x)]
+        self.enable_launch_mode = bool(enable_launch_mode)
+        self.launch_click_harvest_threshold = int(launch_click_harvest_threshold)
+        self.launch_ctr_harvest_threshold = float(launch_ctr_harvest_threshold)
+        self.launch_negative_click_threshold = int(launch_negative_click_threshold)
+        self.launch_min_bid_floor = float(launch_min_bid_floor)
+        self.launch_top_of_search_boost_pct = int(launch_top_of_search_boost_pct)
+        self.launch_budget_raise_pct = float(launch_budget_raise_pct)
         self.branded_harvest_order_threshold = int(branded_harvest_order_threshold)
         self.branded_scale_roas_floor = float(branded_scale_roas_floor)
         self.branded_negative_multiplier = float(branded_negative_multiplier)
@@ -1027,6 +1084,9 @@ class AdsOptimizerEngine:
         prior_action_direction = str(row.get("prior_action_direction", "") or "")
         roas_trend = str(row.get("roas_trend", "flat") or "flat")
         order_trend = str(row.get("order_trend", "flat") or "flat")
+        campaign_mode = str(row.get("campaign_mode", "mature") or "mature").lower()
+        ctr = safe_ctr(row)
+        impressions = float(row.get("impressions", 0) or 0)
 
         if recent_action_count <= 0:
             return True
@@ -1329,6 +1389,13 @@ class AdsOptimizerEngine:
         current_budget = float(row.get("daily_budget", 0) or 0)
         if current_budget <= 0:
             return "NO_ACTION", current_budget, 0.0
+
+        if campaign_mode == "launch":
+            # Launch campaigns get budget support when they need more delivery, not just efficiency proof.
+            if impressions < 3000 or clicks < self.launch_click_harvest_threshold:
+                new_budget = round_budget_value(current_budget * (1 + max(self.launch_budget_raise_pct, up_step)), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, max(self.launch_budget_raise_pct, up_step)
 
         roas = float(row.get("roas", 0) or 0)
         orders = float(row.get("orders", 0) or 0)
