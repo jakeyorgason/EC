@@ -228,6 +228,9 @@ def get_default_rejected_harvest_keys():
     return {
         "243073361750245||187450447764615||ador energy drink",
         "243073361750245||187450447764615||energy drinks",
+        "280358169569684||241284478961166||ardor energy drink",
+        "243073361750245||187450447764615||ardor energy drink",
+        "280358169569684||241284478961166||ardor sparkling water",
     }
 
 def normalize_entity_id(value):
