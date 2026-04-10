@@ -126,13 +126,35 @@ def display_df(df: pd.DataFrame, preferred: Optional[list[str]] = None, height: 
 
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     export_df = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    if export_df.empty:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame().to_excel(writer, index=False, sheet_name="Output")
+        return output.getvalue()
+
     export_df.columns = [str(c).strip() for c in export_df.columns]
+
+    # First hard dedupe by header name
     export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
 
-    if "Product" in export_df.columns:
-        keep_cols = [c for c in BULK_EXPORT_COLUMNS if c in export_df.columns]
-        if keep_cols:
-            export_df = export_df[keep_cols + [c for c in export_df.columns if c not in keep_cols]].copy()
+    approved_cols = []
+    seen = set()
+    for col in BULK_EXPORT_COLUMNS:
+        if col in export_df.columns and col not in seen:
+            approved_cols.append(col)
+            seen.add(col)
+
+    remaining_cols = []
+    for col in export_df.columns:
+        if col not in seen:
+            remaining_cols.append(col)
+            seen.add(col)
+
+    export_df = export_df[approved_cols + remaining_cols].copy()
+
+    # Final hard dedupe again after reordering
+    export_df = export_df.loc[:, ~pd.Index(export_df.columns).duplicated(keep="first")].copy()
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -143,12 +165,28 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 def product_bulk_slice(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
     if df is None or df.empty or "Product" not in df.columns:
         return pd.DataFrame()
+
     out = df[df["Product"].astype(str).str.strip() == product_name].copy()
     out.columns = [str(c).strip() for c in out.columns]
+
     out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
-    keep_cols = [c for c in BULK_EXPORT_COLUMNS if c in out.columns]
-    if keep_cols:
-        out = out[keep_cols + [c for c in out.columns if c not in keep_cols]].copy()
+
+    approved_cols = []
+    seen = set()
+    for col in BULK_EXPORT_COLUMNS:
+        if col in out.columns and col not in seen:
+            approved_cols.append(col)
+            seen.add(col)
+
+    remaining_cols = []
+    for col in out.columns:
+        if col not in seen:
+            remaining_cols.append(col)
+            seen.add(col)
+
+    out = out[approved_cols + remaining_cols].copy()
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
+
     return out.reset_index(drop=True)
 
 
