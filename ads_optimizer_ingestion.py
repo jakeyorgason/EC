@@ -1244,6 +1244,7 @@ class AdsOptimizerEngine:
         return " | ".join(pieces)
 
     def calculate_weighted_efficiency_score(self, row, adjusted_target):
+        campaign_mode = str(row.get("campaign_mode", "mature") or "mature").lower()
         roas = float(row.get("roas", 0) or 0)
         clicks = float(row.get("clicks", 0) or 0)
         orders = float(row.get("orders", 0) or 0)
@@ -1317,6 +1318,7 @@ class AdsOptimizerEngine:
 
 
     def determine_dynamic_bid_change(self, row, score, adjusted_target):
+        campaign_mode = str(row.get("campaign_mode", "mature") or "mature").lower()
         current_bid = float(row.get("current_bid", 0) or 0)
         if current_bid <= 0:
             return "NO_ACTION", current_bid, 0.0
