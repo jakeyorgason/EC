@@ -2910,8 +2910,10 @@ class AdsOptimizerEngine:
     def generate_harvest_bulk_updates(self, search_term_actions_df):
         if not hasattr(self, "harvested_exact_memory"):
             self.harvested_exact_memory = set()
+        default_rejects = set(get_default_rejected_harvest_keys())
         if not hasattr(self, "rejected_harvest_memory"):
-            self.rejected_harvest_memory = set(get_default_rejected_harvest_keys())
+            self.rejected_harvest_memory = set()
+        self.rejected_harvest_memory.update(default_rejects)
 
         actionable = search_term_actions_df[
             search_term_actions_df["search_term_action"] == "HARVEST_TO_EXACT"
