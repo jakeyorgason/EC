@@ -2856,12 +2856,34 @@ class AdsOptimizerEngine:
             .str.replace(r"\s+", " ", regex=True)
         )
 
-        actionable["campaign_name_norm"] = actionable["campaign_name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
-        actionable["ad_group_name_norm"] = actionable["ad_group_name"].fillna("").astype(str).str.lower().str.strip().str.replace(r"\s+", " ", regex=True)
+        actionable["campaign_name_norm"] = (
+            actionable["campaign_name"]
+            .fillna("")
+            .astype(str)
+            .str.lower()
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+        )
+        actionable["ad_group_name_norm"] = (
+            actionable["ad_group_name"]
+            .fillna("")
+            .astype(str)
+            .str.lower()
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+        )
 
         actionable["ad_group_key"] = actionable["campaign_name_norm"] + "||" + actionable["ad_group_name_norm"]
         actionable = actionable[actionable["normalized_term"] != ""]
         actionable = actionable[actionable["ad_group_key"].isin(self.keyword_capable_ad_groups)]
+
+        if actionable.empty:
+            return pd.DataFrame()
+
+        # Require a minimum proof threshold before harvest
+        if "orders" in actionable.columns:
+            actionable["orders"] = pd.to_numeric(actionable["orders"], errors="coerce").fillna(0)
+            actionable = actionable[actionable["orders"] >= 2].copy()
 
         if actionable.empty:
             return pd.DataFrame()
@@ -2881,6 +2903,13 @@ class AdsOptimizerEngine:
             + "||"
             + actionable["normalized_term"]
             + "||exact"
+        )
+        actionable["memory_key"] = (
+            actionable["campaign_name_norm"]
+            + "||"
+            + actionable["ad_group_name_norm"]
+            + "||"
+            + actionable["normalized_term"]
         )
 
         existing_exact_keys_id = set()
@@ -2949,6 +2978,9 @@ class AdsOptimizerEngine:
             )
             actionable = actionable[~actionable["legacy_name_key"].isin(self.existing_any_keywords)].copy()
 
+        # Persistent/session memory to stop repeat harvest attempts across runs
+        actionable = actionable[~actionable["memory_key"].isin(self.harvested_exact_memory)].copy()
+
         actionable = actionable.drop_duplicates(
             subset=["campaign_id_norm", "ad_group_id_norm", "normalized_term"],
             keep="first",
@@ -2956,6 +2988,8 @@ class AdsOptimizerEngine:
 
         if actionable.empty:
             return pd.DataFrame()
+
+        self.harvested_exact_memory.update(actionable["memory_key"].tolist())
 
         bulk = pd.DataFrame(index=actionable.index)
         bulk["Product"] = "Sponsored Products"
