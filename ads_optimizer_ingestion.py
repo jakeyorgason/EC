@@ -329,6 +329,13 @@ def determine_launch_mode(
     return "mature"
 
 
+
+def get_campaign_mode(row):
+    try:
+        return str(row.get("campaign_mode", "mature") or "mature").lower()
+    except Exception:
+        return "mature"
+
 def safe_ctr(row):
     ctr = row.get("ctr", None)
     if ctr not in (None, ""):
@@ -1084,7 +1091,7 @@ class AdsOptimizerEngine:
         prior_action_direction = str(row.get("prior_action_direction", "") or "")
         roas_trend = str(row.get("roas_trend", "flat") or "flat")
         order_trend = str(row.get("order_trend", "flat") or "flat")
-        campaign_mode = str(row.get("campaign_mode", "mature") or "mature").lower()
+        campaign_mode = get_campaign_mode(row)
         ctr = safe_ctr(row)
         impressions = float(row.get("impressions", 0) or 0)
 
@@ -1244,7 +1251,6 @@ class AdsOptimizerEngine:
         return " | ".join(pieces)
 
     def calculate_weighted_efficiency_score(self, row, adjusted_target):
-        campaign_mode = str(row.get("campaign_mode", "mature") or "mature").lower()
         roas = float(row.get("roas", 0) or 0)
         clicks = float(row.get("clicks", 0) or 0)
         orders = float(row.get("orders", 0) or 0)
@@ -1318,7 +1324,6 @@ class AdsOptimizerEngine:
 
 
     def determine_dynamic_bid_change(self, row, score, adjusted_target):
-        campaign_mode = str(row.get("campaign_mode", "mature") or "mature").lower()
         current_bid = float(row.get("current_bid", 0) or 0)
         if current_bid <= 0:
             return "NO_ACTION", current_bid, 0.0
@@ -1392,7 +1397,7 @@ class AdsOptimizerEngine:
         if current_budget <= 0:
             return "NO_ACTION", current_budget, 0.0
 
-        if campaign_mode == "launch":
+        if get_campaign_mode(row) == "launch":
             # Launch campaigns get budget support when they need more delivery, not just efficiency proof.
             if impressions < 3000 or clicks < self.launch_click_harvest_threshold:
                 new_budget = round_budget_value(current_budget * (1 + max(self.launch_budget_raise_pct, up_step)), self.max_budget_cap)
