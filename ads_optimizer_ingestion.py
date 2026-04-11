@@ -326,6 +326,11 @@ def determine_launch_mode(
     if orders < 5 and (clicks < 40 or impressions < 5000 or spend < 150 or sales < 300):
         return "launch"
 
+    if orders == 0 and (clicks >= 20 or spend >= 50):
+        return "stalled"
+    if orders < 3 and spend >= 75 and sales < 100:
+        return "stalled"
+
     return "mature"
 
 
@@ -752,6 +757,13 @@ class AdsOptimizerEngine:
         launch_min_bid_floor=0.75,
         launch_top_of_search_boost_pct=15,
         launch_budget_raise_pct=0.15,
+        enable_stalled_mode=True,
+        stalled_click_harvest_threshold=10,
+        stalled_negative_click_threshold=25,
+        stalled_ctr_negate_threshold=0.001,
+        stalled_top_of_search_test_pct=10,
+        stalled_budget_raise_pct=0.10,
+        stalled_budget_down_pct=0.10,
         branded_harvest_order_threshold=2,
         branded_scale_roas_floor=0.85,
         branded_negative_multiplier=1.50,
@@ -800,6 +812,13 @@ class AdsOptimizerEngine:
         self.launch_min_bid_floor = float(launch_min_bid_floor)
         self.launch_top_of_search_boost_pct = int(launch_top_of_search_boost_pct)
         self.launch_budget_raise_pct = float(launch_budget_raise_pct)
+        self.enable_stalled_mode = bool(enable_stalled_mode)
+        self.stalled_click_harvest_threshold = int(stalled_click_harvest_threshold)
+        self.stalled_negative_click_threshold = int(stalled_negative_click_threshold)
+        self.stalled_ctr_negate_threshold = float(stalled_ctr_negate_threshold)
+        self.stalled_top_of_search_test_pct = int(stalled_top_of_search_test_pct)
+        self.stalled_budget_raise_pct = float(stalled_budget_raise_pct)
+        self.stalled_budget_down_pct = float(stalled_budget_down_pct)
         self.branded_harvest_order_threshold = int(branded_harvest_order_threshold)
         self.branded_scale_roas_floor = float(branded_scale_roas_floor)
         self.branded_negative_multiplier = float(branded_negative_multiplier)
