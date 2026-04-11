@@ -314,8 +314,14 @@ def determine_launch_mode(
     explicit_launch_tokens = [
         "launch", "ranking", "rank", "new product", "new launch", "launching", "test launch"
     ]
+    recovery_tokens = [
+        "recover", "recovery", "restock", "back in stock", "ramp", "ramp up", "relaunch"
+    ]
+
     if any(token in name_blob for token in explicit_launch_tokens):
         return "launch"
+    if any(token in name_blob for token in recovery_tokens):
+        return "recovery"
 
     clicks = float(clicks or 0)
     orders = float(orders or 0)
@@ -323,9 +329,17 @@ def determine_launch_mode(
     spend = float(spend or 0)
     sales = float(sales or 0)
 
+    # Early launch: little data, needs exploration.
     if orders < 5 and (clicks < 40 or impressions < 5000 or spend < 150 or sales < 300):
         return "launch"
 
+    # Recovery: some traction exists, but account needs momentum rebuilt after interruption.
+    if orders > 0 and orders < 8 and sales > 0 and sales < 500 and spend < 250:
+        return "recovery"
+    if clicks >= 4 and sales > 0 and orders < 5:
+        return "recovery"
+
+    # Stalled launch: enough data to know traction is weak, but not enough success to be mature.
     if orders == 0 and (clicks >= 20 or spend >= 50):
         return "stalled"
     if orders < 3 and spend >= 75 and sales < 100:
@@ -764,6 +778,13 @@ class AdsOptimizerEngine:
         stalled_top_of_search_test_pct=10,
         stalled_budget_raise_pct=0.10,
         stalled_budget_down_pct=0.10,
+        enable_recovery_mode=True,
+        recovery_click_harvest_threshold=6,
+        recovery_ctr_harvest_threshold=0.002,
+        recovery_negative_click_threshold=35,
+        recovery_min_bid_floor=0.65,
+        recovery_top_of_search_test_pct=10,
+        recovery_budget_raise_pct=0.10,
         branded_harvest_order_threshold=2,
         branded_scale_roas_floor=0.85,
         branded_negative_multiplier=1.50,
@@ -819,6 +840,13 @@ class AdsOptimizerEngine:
         self.stalled_top_of_search_test_pct = int(stalled_top_of_search_test_pct)
         self.stalled_budget_raise_pct = float(stalled_budget_raise_pct)
         self.stalled_budget_down_pct = float(stalled_budget_down_pct)
+        self.enable_recovery_mode = bool(enable_recovery_mode)
+        self.recovery_click_harvest_threshold = int(recovery_click_harvest_threshold)
+        self.recovery_ctr_harvest_threshold = float(recovery_ctr_harvest_threshold)
+        self.recovery_negative_click_threshold = int(recovery_negative_click_threshold)
+        self.recovery_min_bid_floor = float(recovery_min_bid_floor)
+        self.recovery_top_of_search_test_pct = int(recovery_top_of_search_test_pct)
+        self.recovery_budget_raise_pct = float(recovery_budget_raise_pct)
         self.branded_harvest_order_threshold = int(branded_harvest_order_threshold)
         self.branded_scale_roas_floor = float(branded_scale_roas_floor)
         self.branded_negative_multiplier = float(branded_negative_multiplier)
