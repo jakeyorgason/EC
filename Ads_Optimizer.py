@@ -998,7 +998,7 @@ Sponsored Display
     if enable_ai_review and not api_key_present:
         st.warning("OPENAI_API_KEY not found. Add it to Streamlit secrets or environment variables.")
     st.markdown("---")
-    st.markdown("**App Version:** 2.1")
+    st.markdown("**App Version:** 2.2")
     st.markdown(f"**Ingestion Version:** {INGESTION_VERSION}")
     st.markdown("**Owner:** Jake Yorgason, Evolved Commerce")
 
