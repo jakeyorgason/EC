@@ -7,6 +7,8 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+INGESTION_VERSION = "v8.2 parser-budget-fix"
+
 
 def robust_read_csv(file_obj, **kwargs):
     """Read CSVs defensively so malformed lines do not crash the optimizer."""
@@ -1463,6 +1465,83 @@ class AdsOptimizerEngine:
         current_budget = float(row.get("daily_budget", 0) or 0)
         if current_budget <= 0:
             return "NO_ACTION", current_budget, 0.0
+
+        roas = float(row.get("roas", 0) or 0)
+        orders = float(row.get("orders", 0) or 0)
+        clicks = float(row.get("clicks", 0) or 0)
+        impressions = float(row.get("impressions", 0) or 0)
+        share = float(row.get("avg_impression_share_pct", 0) or 0)
+        brand_segment = str(row.get("brand_segment", "") or "")
+        campaign_intent = str(row.get("campaign_intent", "") or "")
+        roas_trend = str(row.get("roas_trend", "flat") or "flat")
+        order_trend = str(row.get("order_trend", "flat") or "flat")
+        mode = get_campaign_mode(row)
+
+        effective_target = self.get_effective_target(row, adjusted_target)
+        gap_ratio = abs((roas - effective_target) / effective_target) if effective_target > 0 else 0
+        up_step = dynamic_step_from_gap(gap_ratio, min(0.04, self.budget_up_pct), self.budget_up_pct)
+        down_step = dynamic_step_from_gap(gap_ratio, min(0.05, self.budget_down_pct), self.budget_down_pct)
+
+        if self.build_budget_pacing_status().get("over_pace"):
+            up_step = 0.0
+
+        if mode == "launch" and self.enable_launch_mode:
+            if impressions < 3000 or clicks < self.launch_click_harvest_threshold:
+                launch_up = max(self.launch_budget_raise_pct, up_step)
+                new_budget = round_budget_value(current_budget * (1 + launch_up), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, launch_up
+
+        if mode == "stalled" and self.enable_stalled_mode:
+            if clicks < self.stalled_click_harvest_threshold or impressions < 4000:
+                stalled_up = max(self.stalled_budget_raise_pct, up_step)
+                new_budget = round_budget_value(current_budget * (1 + stalled_up), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, stalled_up
+
+            if clicks >= self.stalled_negative_click_threshold and orders == 0 and roas <= 0:
+                stalled_down = max(self.stalled_budget_down_pct, down_step)
+                new_budget = round_budget_value(current_budget * (1 - stalled_down), self.max_budget_cap)
+                if new_budget < current_budget:
+                    return "DECREASE_BUDGET", new_budget, stalled_down
+
+        if mode == "recovery" and self.enable_recovery_mode:
+            if impressions < 5000 or clicks < self.recovery_click_harvest_threshold:
+                recovery_up = max(self.recovery_budget_raise_pct, up_step)
+                new_budget = round_budget_value(current_budget * (1 + recovery_up), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, recovery_up
+
+        if campaign_intent in {"scale", "rank"} and roas >= effective_target:
+            up_step = min(self.budget_up_pct, up_step + 0.03)
+        if campaign_intent == "efficiency":
+            down_step = min(self.budget_down_pct, down_step + 0.03)
+            up_step = max(0.0, up_step - 0.02)
+        if campaign_intent == "defense" and brand_segment == "branded":
+            down_step = min(down_step, 0.08)
+
+        if roas >= effective_target * 1.10 and orders >= self.min_orders_for_scaling and share < 25 and up_step > 0:
+            if self.passes_repeat_support_gate(row, "increase") and (
+                roas_trend == "up" or order_trend == "up" or campaign_intent in {"scale", "rank", "defense"}
+            ):
+                new_budget = round_budget_value(current_budget * (1 + up_step), self.max_budget_cap)
+                if not self.action_clears_execution_threshold("INCREASE_BUDGET", current_budget, new_budget):
+                    return "NO_ACTION", current_budget, 0.0
+                return "INCREASE_BUDGET", new_budget, up_step
+
+        if (roas < effective_target and clicks >= max(self.min_clicks * 3, 25)) or (
+            orders == 0 and float(row.get("spend", 0) or 0) >= 20
+        ):
+            if brand_segment == "branded" and campaign_intent == "defense" and roas_trend == "up":
+                return "NO_ACTION", current_budget, 0.0
+            if not self.passes_repeat_support_gate(row, "decrease"):
+                return "NO_ACTION", current_budget, 0.0
+            new_budget = round_budget_value(current_budget * (1 - down_step), self.max_budget_cap)
+            if not self.action_clears_execution_threshold("DECREASE_BUDGET", current_budget, new_budget):
+                return "NO_ACTION", current_budget, 0.0
+            return "DECREASE_BUDGET", new_budget, down_step
+
+        return "NO_ACTION", current_budget, 0.0
 
         if get_campaign_mode(row) == "launch":
             # Launch campaigns get budget support when they need more delivery, not just efficiency proof.
