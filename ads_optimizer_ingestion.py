@@ -7,7 +7,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-INGESTION_VERSION = "v8.2 parser-budget-fix"
+INGESTION_VERSION = "v8.3 full-rewrite-fix"
 
 
 def robust_read_csv(file_obj, **kwargs):
@@ -16,6 +16,7 @@ def robust_read_csv(file_obj, **kwargs):
         dict(kwargs),
         dict(kwargs, on_bad_lines="skip"),
         dict(kwargs, engine="python", on_bad_lines="skip"),
+        dict(kwargs, engine="python", on_bad_lines="skip", encoding_errors="replace"),
     ]
     last_error = None
 
@@ -26,6 +27,19 @@ def robust_read_csv(file_obj, **kwargs):
             return pd.read_csv(file_obj, **attempt)
         except Exception as e:
             last_error = e
+
+    # Final fallback: decode bytes permissively and parse from text buffer.
+    try:
+        if hasattr(file_obj, "seek"):
+            file_obj.seek(0)
+        raw = file_obj.read()
+        if isinstance(raw, bytes):
+            text = raw.decode("utf-8-sig", errors="replace")
+        else:
+            text = str(raw)
+        return pd.read_csv(io.StringIO(text), engine="python", on_bad_lines="skip", **kwargs)
+    except Exception:
+        pass
 
     raise last_error
 
@@ -1543,63 +1557,6 @@ class AdsOptimizerEngine:
 
         return "NO_ACTION", current_budget, 0.0
 
-        if get_campaign_mode(row) == "launch":
-            # Launch campaigns get budget support when they need more delivery, not just efficiency proof.
-            if impressions < 3000 or clicks < self.launch_click_harvest_threshold:
-                new_budget = round_budget_value(current_budget * (1 + max(self.launch_budget_raise_pct, up_step)), self.max_budget_cap)
-                if new_budget > current_budget:
-                    return "INCREASE_BUDGET", new_budget, max(self.launch_budget_raise_pct, up_step)
-
-        roas = float(row.get("roas", 0) or 0)
-        orders = float(row.get("orders", 0) or 0)
-        clicks = float(row.get("clicks", 0) or 0)
-        share = float(row.get("avg_impression_share_pct", 0) or 0)
-        brand_segment = str(row.get("brand_segment", "") or "")
-        campaign_intent = str(row.get("campaign_intent", "") or "")
-        roas_trend = str(row.get("roas_trend", "flat") or "flat")
-        order_trend = str(row.get("order_trend", "flat") or "flat")
-
-        effective_target = self.get_effective_target(row, adjusted_target)
-        gap_ratio = abs((roas - effective_target) / effective_target) if effective_target > 0 else 0
-        up_step = dynamic_step_from_gap(gap_ratio, min(0.04, self.budget_up_pct), self.budget_up_pct)
-        down_step = dynamic_step_from_gap(gap_ratio, min(0.05, self.budget_down_pct), self.budget_down_pct)
-
-        if self.build_budget_pacing_status().get("over_pace"):
-            up_step = 0.0
-
-        if campaign_intent in {"scale", "rank"} and roas >= effective_target:
-            up_step = min(self.budget_up_pct, up_step + 0.03)
-        if campaign_intent == "efficiency":
-            down_step = min(self.budget_down_pct, down_step + 0.03)
-            up_step = max(0.0, up_step - 0.02)
-        if campaign_intent == "defense" and brand_segment == "branded":
-            down_step = min(down_step, 0.08)
-
-        if roas >= effective_target * 1.10 and orders >= self.min_orders_for_scaling and share < 25 and up_step > 0:
-            if self.passes_repeat_support_gate(row, "increase") and (roas_trend == "up" or order_trend == "up" or campaign_intent in {"scale", "rank", "defense"}):
-                new_budget = round_budget_value(current_budget * (1 + up_step), self.max_budget_cap)
-                if not self.action_clears_execution_threshold("INCREASE_BUDGET", current_budget, new_budget):
-                    return "NO_ACTION", current_budget, 0.0
-                return "INCREASE_BUDGET", new_budget, up_step
-
-        if (roas < effective_target and clicks >= max(self.min_clicks * 3, 25)) or (orders == 0 and float(row.get("spend", 0) or 0) >= 20):
-            if brand_segment == "branded" and campaign_intent == "defense" and roas_trend == "up":
-                return "NO_ACTION", current_budget, 0.0
-            if not self.passes_repeat_support_gate(row, "decrease"):
-                return "NO_ACTION", current_budget, 0.0
-            new_budget = round_budget_value(current_budget * (1 - down_step), self.max_budget_cap)
-            if not self.action_clears_execution_threshold("DECREASE_BUDGET", current_budget, new_budget):
-                return "NO_ACTION", current_budget, 0.0
-            return "DECREASE_BUDGET", new_budget, down_step
-
-        return "NO_ACTION", current_budget, 0.0
-
-
-    # -----------------------------
-    # CAMPAIGN HEALTH DASHBOARD
-    # -----------------------------
-    # CAMPAIGN HEALTH DASHBOARD
-    # -----------------------------
     def build_campaign_health_dashboard(self, targeting_with_share_df, adjusted_min_roas):
         df = targeting_with_share_df.copy()
 
@@ -1969,7 +1926,7 @@ class AdsOptimizerEngine:
         new_row_df = pd.DataFrame([row])
 
         if os.path.exists(history_path):
-            existing = pd.read_csv(history_path)
+            existing = robust_read_csv(history_path)
             updated = safe_concat_frames([existing, new_row_df], ignore_index=True)
         else:
             updated = new_row_df
@@ -1979,14 +1936,14 @@ class AdsOptimizerEngine:
     def load_run_history(self):
         history_path = "run_history.csv"
         if os.path.exists(history_path):
-            return pd.read_csv(history_path)
+            return robust_read_csv(history_path)
         return pd.DataFrame()
 
 
     def load_action_history(self):
         history_path = "action_history.csv"
         if os.path.exists(history_path):
-            return pd.read_csv(history_path)
+            return robust_read_csv(history_path)
         return pd.DataFrame()
 
     def save_action_history(self, action_df: pd.DataFrame, entity_level: str):
@@ -2008,7 +1965,7 @@ class AdsOptimizerEngine:
         export = export[keep_cols].copy()
 
         if os.path.exists(history_path):
-            existing = pd.read_csv(history_path)
+            existing = robust_read_csv(history_path)
             export = pd.concat([existing, export], ignore_index=True)
 
         export.to_csv(history_path, index=False)
