@@ -7,6 +7,24 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+def robust_read_csv(file_obj, **kwargs):
+    """Read CSVs defensively so malformed rows do not crash optimization."""
+    attempts = [
+        dict(kwargs),
+        dict(kwargs, on_bad_lines="skip"),
+        dict(kwargs, engine="python", on_bad_lines="skip"),
+    ]
+    last_error = None
+    for attempt in attempts:
+        try:
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            return pd.read_csv(file_obj, **attempt)
+        except Exception as e:
+            last_error = e
+    raise last_error
+
+
 def find_matching_sheet_name(sheet_names, candidates):
     normalized = {str(name).strip().lower(): name for name in sheet_names}
 
@@ -318,28 +336,28 @@ def determine_launch_mode(
         "recover", "recovery", "restock", "back in stock", "ramp", "ramp up", "relaunch"
     ]
 
-    if any(token in name_blob for token in explicit_launch_tokens):
-        return "launch"
-    if any(token in name_blob for token in recovery_tokens):
-        return "recovery"
-
     clicks = float(clicks or 0)
     orders = float(orders or 0)
     impressions = float(impressions or 0)
     spend = float(spend or 0)
     sales = float(sales or 0)
 
-    # Early launch: little data, needs exploration.
+    if any(token in name_blob for token in explicit_launch_tokens):
+        if orders == 0 and (clicks >= 20 or spend >= 50):
+            return "stalled"
+        return "launch"
+
+    if any(token in name_blob for token in recovery_tokens):
+        return "recovery"
+
     if orders < 5 and (clicks < 40 or impressions < 5000 or spend < 150 or sales < 300):
         return "launch"
 
-    # Recovery: some traction exists, but account needs momentum rebuilt after interruption.
     if orders > 0 and orders < 8 and sales > 0 and sales < 500 and spend < 250:
         return "recovery"
     if clicks >= 4 and sales > 0 and orders < 5:
         return "recovery"
 
-    # Stalled launch: enough data to know traction is weak, but not enough success to be mature.
     if orders == 0 and (clicks >= 20 or spend >= 50):
         return "stalled"
     if orders < 3 and spend >= 75 and sales < 100:
@@ -556,7 +574,7 @@ class Phase1UploadValidator:
         ext = self._get_file_extension(file_obj, fallback=expected_ext)
         cloned = self._clone_file_obj(file_obj)
         if ext == '.csv':
-            return pd.read_csv(cloned, **kwargs)
+            return robust_read_csv(cloned, **kwargs)
         if ext in ['.xlsx', '.xls']:
             return pd.read_excel(cloned, engine='openpyxl', **kwargs)
         raise ValueError(f'Unsupported file type: {ext}')
@@ -956,7 +974,7 @@ class AdsOptimizerEngine:
         cloned = self._clone_file_obj(file_obj)
 
         if ext == ".csv":
-            return pd.read_csv(cloned)
+            return robust_read_csv(cloned)
 
         if ext in [".xlsx", ".xls"]:
             return pd.read_excel(cloned, engine="openpyxl")
@@ -986,7 +1004,7 @@ class AdsOptimizerEngine:
             return None
 
         cloned = self._clone_file_obj(self.sqp_report_file)
-        return pd.read_csv(cloned, header=1)
+        return robust_read_csv(cloned, header=1)
 
     # -----------------------------
     # HELPERS
@@ -1378,6 +1396,114 @@ class AdsOptimizerEngine:
         roas = float(row.get("roas", 0) or 0)
         orders = float(row.get("orders", 0) or 0)
         clicks = float(row.get("clicks", 0) or 0)
+        impressions = float(row.get("impressions", 0) or 0)
+        ctr = safe_ctr(row)
+
+        brand_segment = str(row.get("brand_segment", "") or "")
+        placement_bucket = str(row.get("placement_bucket", "") or "")
+        campaign_intent = str(row.get("campaign_intent", "") or "")
+        roas_trend = str(row.get("roas_trend", "flat") or "flat")
+        order_trend = str(row.get("order_trend", "flat") or "flat")
+        mode = get_campaign_mode(row)
+
+        effective_target = self.get_effective_target(row, adjusted_target)
+        gap_ratio = abs((roas - effective_target) / effective_target) if effective_target > 0 else 0
+        increase_step = dynamic_step_from_gap(gap_ratio, min(0.04, self.max_bid_up), self.max_bid_up)
+        decrease_step = dynamic_step_from_gap(gap_ratio, min(0.06, self.max_bid_down), self.max_bid_down)
+
+        if self.enable_placement_weighting and placement_bucket == "top_of_search" and roas >= effective_target:
+            increase_step = min(self.max_bid_up, increase_step + 0.04)
+        if self.enable_placement_weighting and placement_bucket == "product_pages" and roas < effective_target:
+            decrease_step = min(self.max_bid_down, decrease_step + 0.03)
+        if self.enable_placement_weighting and placement_bucket == "rest_of_search" and roas >= effective_target * 1.10:
+            increase_step = min(self.max_bid_up, increase_step + 0.01)
+
+        if campaign_intent in {"scale", "rank"} and roas >= effective_target:
+            increase_step = min(self.max_bid_up, increase_step + 0.02)
+        if campaign_intent == "efficiency":
+            decrease_step = min(self.max_bid_down, decrease_step + 0.02)
+            increase_step = max(0.0, increase_step - 0.02)
+        if campaign_intent == "defense" and brand_segment == "branded":
+            decrease_step = min(decrease_step, 0.06)
+
+        if mode == "launch":
+            if clicks >= self.launch_click_harvest_threshold and ctr >= self.launch_ctr_harvest_threshold and impressions > 0 and roas_trend != "down":
+                launch_up_step = max(increase_step, 0.08)
+                if placement_bucket == "top_of_search":
+                    launch_up_step = min(self.max_bid_up, launch_up_step + 0.02)
+                new_bid = round_bid_value(max(current_bid * (1 + launch_up_step), self.launch_min_bid_floor), self.max_bid_cap)
+                if new_bid > current_bid:
+                    return "INCREASE_BID", new_bid, launch_up_step
+
+            if clicks >= self.launch_negative_click_threshold and orders == 0 and ctr < max(self.launch_ctr_harvest_threshold / 2.0, 0.001):
+                new_bid = round_bid_value(current_bid * (1 - max(decrease_step, 0.08)), self.max_bid_cap)
+                if new_bid < current_bid:
+                    return "DECREASE_BID", new_bid, max(decrease_step, 0.08)
+
+        if mode == "stalled":
+            if ctr >= max(self.launch_ctr_harvest_threshold, 0.003) and roas_trend != "down":
+                stalled_up_step = max(increase_step, 0.10)
+                new_bid = round_bid_value(max(current_bid * (1 + stalled_up_step), self.launch_min_bid_floor), self.max_bid_cap)
+                if new_bid > current_bid:
+                    return "INCREASE_BID", new_bid, stalled_up_step
+
+            if clicks >= self.stalled_negative_click_threshold and orders == 0 and ctr <= self.stalled_ctr_negate_threshold:
+                stalled_down_step = max(decrease_step, 0.08)
+                new_bid = round_bid_value(current_bid * (1 - stalled_down_step), self.max_bid_cap)
+                if new_bid < current_bid:
+                    return "DECREASE_BID", new_bid, stalled_down_step
+
+        if mode == "recovery":
+            if clicks >= self.recovery_click_harvest_threshold and ctr >= self.recovery_ctr_harvest_threshold and roas_trend != "down":
+                recovery_up_step = max(increase_step, 0.06)
+                new_bid = round_bid_value(max(current_bid * (1 + recovery_up_step), self.recovery_min_bid_floor), self.max_bid_cap)
+                if new_bid > current_bid:
+                    return "INCREASE_BID", new_bid, recovery_up_step
+
+            if clicks >= self.recovery_negative_click_threshold and orders == 0 and ctr < max(self.recovery_ctr_harvest_threshold / 2.0, 0.001):
+                recovery_down_step = max(decrease_step, 0.06)
+                new_bid = round_bid_value(current_bid * (1 - recovery_down_step), self.max_bid_cap)
+                if new_bid < current_bid:
+                    return "DECREASE_BID", new_bid, recovery_down_step
+
+        if self.should_zero_order_decrease_bid() and clicks >= self.zero_order_click_threshold and orders == 0:
+            if brand_segment == "branded" and campaign_intent == "defense":
+                return "NO_ACTION", current_bid, 0.0
+            if mode == "launch":
+                return "NO_ACTION", current_bid, 0.0
+            if not self.passes_repeat_support_gate(row, "decrease"):
+                return "NO_ACTION", current_bid, 0.0
+            new_bid = round_bid_value(current_bid * (1 - max(decrease_step, 0.08)), self.max_bid_cap)
+            if not self.action_clears_execution_threshold("DECREASE_BID", current_bid, new_bid):
+                return "NO_ACTION", current_bid, 0.0
+            return "DECREASE_BID", new_bid, max(decrease_step, 0.08)
+
+        if roas < effective_target and clicks >= self.min_clicks:
+            if not self.passes_repeat_support_gate(row, "decrease"):
+                return "NO_ACTION", current_bid, 0.0
+            new_bid = round_bid_value(current_bid * (1 - decrease_step), self.max_bid_cap)
+            if not self.action_clears_execution_threshold("DECREASE_BID", current_bid, new_bid):
+                return "NO_ACTION", current_bid, 0.0
+            return "DECREASE_BID", new_bid, decrease_step
+
+        if (
+            not self.build_budget_pacing_status().get("over_pace")
+            and score >= 0.98
+            and orders >= self.min_orders_for_scaling
+            and roas >= effective_target * 1.05
+            and (roas_trend == "up" or order_trend == "up" or campaign_intent in {"scale", "rank", "defense"})
+            and self.passes_repeat_support_gate(row, "increase")
+        ):
+            new_bid = round_bid_value(current_bid * (1 + increase_step), self.max_bid_cap)
+            if not self.action_clears_execution_threshold("INCREASE_BID", current_bid, new_bid):
+                return "NO_ACTION", current_bid, 0.0
+            return "INCREASE_BID", new_bid, increase_step
+
+        return "NO_ACTION", current_bid, 0.0
+
+        roas = float(row.get("roas", 0) or 0)
+        orders = float(row.get("orders", 0) or 0)
+        clicks = float(row.get("clicks", 0) or 0)
 
         brand_segment = str(row.get("brand_segment", "") or "")
         placement_bucket = str(row.get("placement_bucket", "") or "")
@@ -1443,6 +1569,75 @@ class AdsOptimizerEngine:
         current_budget = float(row.get("daily_budget", 0) or 0)
         if current_budget <= 0:
             return "NO_ACTION", current_budget, 0.0
+
+        roas = float(row.get("roas", 0) or 0)
+        orders = float(row.get("orders", 0) or 0)
+        clicks = float(row.get("clicks", 0) or 0)
+        impressions = float(row.get("impressions", 0) or 0)
+        share = float(row.get("avg_impression_share_pct", 0) or 0)
+        brand_segment = str(row.get("brand_segment", "") or "")
+        campaign_intent = str(row.get("campaign_intent", "") or "")
+        roas_trend = str(row.get("roas_trend", "flat") or "flat")
+        order_trend = str(row.get("order_trend", "flat") or "flat")
+        mode = get_campaign_mode(row)
+
+        effective_target = self.get_effective_target(row, adjusted_target)
+        gap_ratio = abs((roas - effective_target) / effective_target) if effective_target > 0 else 0
+        up_step = dynamic_step_from_gap(gap_ratio, min(0.04, self.budget_up_pct), self.budget_up_pct)
+        down_step = dynamic_step_from_gap(gap_ratio, min(0.05, self.budget_down_pct), self.budget_down_pct)
+
+        if self.build_budget_pacing_status().get("over_pace"):
+            up_step = 0.0
+
+        if mode == "launch":
+            if impressions < 3000 or clicks < self.launch_click_harvest_threshold:
+                new_budget = round_budget_value(current_budget * (1 + max(self.launch_budget_raise_pct, up_step)), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, max(self.launch_budget_raise_pct, up_step)
+
+        if mode == "stalled":
+            if clicks < self.stalled_negative_click_threshold or impressions < 4000:
+                new_budget = round_budget_value(current_budget * (1 + max(self.stalled_budget_raise_pct, up_step)), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, max(self.stalled_budget_raise_pct, up_step)
+
+            if clicks >= self.stalled_negative_click_threshold and orders == 0 and roas <= 0:
+                new_budget = round_budget_value(current_budget * (1 - max(self.stalled_budget_down_pct, down_step)), self.max_budget_cap)
+                if new_budget < current_budget:
+                    return "DECREASE_BUDGET", new_budget, max(self.stalled_budget_down_pct, down_step)
+
+        if mode == "recovery":
+            if impressions < 3500 or clicks < self.recovery_click_harvest_threshold:
+                new_budget = round_budget_value(current_budget * (1 + max(self.recovery_budget_raise_pct, up_step)), self.max_budget_cap)
+                if new_budget > current_budget:
+                    return "INCREASE_BUDGET", new_budget, max(self.recovery_budget_raise_pct, up_step)
+
+        if campaign_intent in {"scale", "rank"} and roas >= effective_target:
+            up_step = min(self.budget_up_pct, up_step + 0.03)
+        if campaign_intent == "efficiency":
+            down_step = min(self.budget_down_pct, down_step + 0.03)
+            up_step = max(0.0, up_step - 0.02)
+        if campaign_intent == "defense" and brand_segment == "branded":
+            down_step = min(down_step, 0.08)
+
+        if roas >= effective_target * 1.10 and orders >= self.min_orders_for_scaling and share < 25 and up_step > 0:
+            if self.passes_repeat_support_gate(row, "increase") and (roas_trend == "up" or order_trend == "up" or campaign_intent in {"scale", "rank", "defense"}):
+                new_budget = round_budget_value(current_budget * (1 + up_step), self.max_budget_cap)
+                if not self.action_clears_execution_threshold("INCREASE_BUDGET", current_budget, new_budget):
+                    return "NO_ACTION", current_budget, 0.0
+                return "INCREASE_BUDGET", new_budget, up_step
+
+        if (roas < effective_target and clicks >= max(self.min_clicks * 3, 25)) or (orders == 0 and float(row.get("spend", 0) or 0) >= 20):
+            if brand_segment == "branded" and campaign_intent == "defense" and roas_trend == "up":
+                return "NO_ACTION", current_budget, 0.0
+            if not self.passes_repeat_support_gate(row, "decrease"):
+                return "NO_ACTION", current_budget, 0.0
+            new_budget = round_budget_value(current_budget * (1 - down_step), self.max_budget_cap)
+            if not self.action_clears_execution_threshold("DECREASE_BUDGET", current_budget, new_budget):
+                return "NO_ACTION", current_budget, 0.0
+            return "DECREASE_BUDGET", new_budget, down_step
+
+        return "NO_ACTION", current_budget, 0.0
 
         if get_campaign_mode(row) == "launch":
             # Launch campaigns get budget support when they need more delivery, not just efficiency proof.
@@ -1903,7 +2098,7 @@ class AdsOptimizerEngine:
             "timestamp", "entity_level", "campaign_name", "ad_group_name", "target", "search_term",
             "match_type", "recommended_action", "campaign_action", "search_term_action",
             "recommended_bid", "recommended_daily_budget", "score", "roas", "clicks", "orders",
-            "spend", "sales", "brand_segment", "placement_bucket"
+            "spend", "sales", "brand_segment", "placement_bucket", "campaign_mode"
         ]
         keep_cols = [c for c in keep_cols if c in export.columns]
         export = export[keep_cols].copy()
@@ -2560,6 +2755,18 @@ class AdsOptimizerEngine:
     # -----------------------------
     def build_bid_recommendations(self, targeting_with_share_df, joined_targeting_df, adjusted_min_roas):
         perf = self.annotate_recent_actions(targeting_with_share_df.copy(), level="target")
+        perf["campaign_mode"] = perf.apply(
+            lambda r: determine_launch_mode(
+                campaign_name=r.get("campaign_name", ""),
+                ad_group_name=r.get("ad_group_name", ""),
+                clicks=r.get("clicks", 0),
+                orders=r.get("orders", 0),
+                impressions=r.get("impressions", 0),
+                spend=r.get("spend", 0),
+                sales=r.get("sales", 0),
+            ),
+            axis=1,
+        )
         perf["campaign_intent"] = perf.apply(
             lambda r: self.classify_campaign_intent(r.get("campaign_name", ""), r.get("brand_segment", ""), r.get("funnel_stage", "")),
             axis=1,
@@ -2642,6 +2849,18 @@ class AdsOptimizerEngine:
     # -----------------------------
     def build_search_term_actions(self, search_terms_df, adjusted_min_roas):
         df = self.annotate_recent_actions(search_terms_df.copy(), level="target")
+        df["campaign_mode"] = df.apply(
+            lambda r: determine_launch_mode(
+                campaign_name=r.get("campaign_name", ""),
+                ad_group_name=r.get("ad_group_name", ""),
+                clicks=r.get("clicks", 0),
+                orders=r.get("orders", 0),
+                impressions=r.get("impressions", 0),
+                spend=r.get("spend", 0),
+                sales=r.get("sales", 0),
+            ),
+            axis=1,
+        )
         df["campaign_intent"] = df.apply(
             lambda r: self.classify_campaign_intent(r.get("campaign_name", ""), r.get("brand_segment", ""), r.get("funnel_stage", "")),
             axis=1,
@@ -2696,12 +2915,25 @@ class AdsOptimizerEngine:
             if campaign_intent == "efficiency":
                 harvest_threshold_orders = max(harvest_threshold_orders, 4)
 
+            campaign_mode = get_campaign_mode(row)
+            ctr = safe_ctr(row)
+
             negative_click_floor = max(
                 self.zero_order_click_threshold,
                 int(self.zero_order_click_threshold * self.branded_negative_multiplier) if brand_segment == "branded"
                 else 16 if brand_segment == "competitor"
                 else 20
             )
+
+            if campaign_mode == "launch":
+                harvest_threshold_orders = 0
+                negative_click_floor = max(negative_click_floor, self.launch_negative_click_threshold)
+            elif campaign_mode == "stalled":
+                harvest_threshold_orders = 0
+                negative_click_floor = max(negative_click_floor, self.stalled_negative_click_threshold)
+            elif campaign_mode == "recovery":
+                harvest_threshold_orders = 0
+                negative_click_floor = max(negative_click_floor, self.recovery_negative_click_threshold)
 
             if (
                 self.enable_negative_keywords
@@ -2715,6 +2947,9 @@ class AdsOptimizerEngine:
                 and brand_segment not in {"branded"}
                 and roas_trend != "up"
                 and self.passes_repeat_support_gate(row, "decrease")
+                and not (campaign_mode == "launch" and ctr >= self.launch_ctr_harvest_threshold)
+                and not (campaign_mode == "stalled" and ctr >= max(self.launch_ctr_harvest_threshold, 0.003))
+                and not (campaign_mode == "recovery" and ctr >= self.recovery_ctr_harvest_threshold)
             ):
                 action = "ADD_NEGATIVE_PHRASE"
 
@@ -2722,14 +2957,33 @@ class AdsOptimizerEngine:
                 self.enable_search_harvesting
                 and not is_auto_ad_group
                 and ad_group_key in self.keyword_capable_ad_groups
-                and row["orders"] >= harvest_threshold_orders
-                and row["clicks"] >= 5
-                and row["roas"] >= max(self.get_effective_target(row, adjusted_min_roas), self.min_roas * (self.branded_scale_roas_floor if brand_segment == "branded" else 1.0))
+                and (
+                    (
+                        campaign_mode == "launch"
+                        and row["clicks"] >= self.launch_click_harvest_threshold
+                        and ctr >= self.launch_ctr_harvest_threshold
+                    )
+                    or (
+                        campaign_mode == "stalled"
+                        and row["clicks"] >= self.stalled_click_harvest_threshold
+                        and ctr >= max(self.launch_ctr_harvest_threshold, 0.003)
+                    )
+                    or (
+                        campaign_mode == "recovery"
+                        and row["clicks"] >= self.recovery_click_harvest_threshold
+                        and ctr >= self.recovery_ctr_harvest_threshold
+                    )
+                    or (
+                        row["orders"] >= harvest_threshold_orders
+                        and row["clicks"] >= 5
+                        and row["roas"] >= max(self.get_effective_target(row, adjusted_min_roas), self.min_roas * (self.branded_scale_roas_floor if brand_segment == "branded" else 1.0))
+                    )
+                )
                 and match_type != "exact"
                 and normalized_term != ""
                 and keyword_exists_key not in self.existing_any_keywords
                 and not row.get("cooldown_active", False)
-                and (order_trend == "up" or roas_trend in {"up", "flat"} or campaign_intent in {"discovery", "rank", "defense"})
+                and (order_trend == "up" or roas_trend in {"up", "flat"} or campaign_intent in {"discovery", "rank", "defense"} or campaign_mode in {"launch", "stalled", "recovery"})
             ):
                 action = "HARVEST_TO_EXACT"
 
@@ -2766,6 +3020,18 @@ class AdsOptimizerEngine:
             0,
         )
         campaign_perf["brand_segment"] = campaign_perf["campaign_name"].apply(lambda x: self.detect_brand_segment("", x))
+        campaign_perf["campaign_mode"] = campaign_perf.apply(
+            lambda r: determine_launch_mode(
+                campaign_name=r.get("campaign_name", ""),
+                ad_group_name="",
+                clicks=r.get("clicks", 0),
+                orders=r.get("orders", 0),
+                impressions=0,
+                spend=r.get("spend", 0),
+                sales=r.get("sales", 0),
+            ),
+            axis=1,
+        )
         campaign_perf["campaign_intent"] = campaign_perf.apply(
             lambda r: self.classify_campaign_intent(r.get("campaign_name", ""), r.get("brand_segment", ""), "capture"),
             axis=1,
@@ -2952,7 +3218,26 @@ class AdsOptimizerEngine:
             pct = 0
             effective_target = self.get_effective_target(row, adjusted_min_roas)
 
-            if placement == "top_of_search" and roas >= effective_target * 1.10 and orders >= self.min_orders_for_scaling:
+            campaign_mode = determine_launch_mode(
+                campaign_name=row.get("campaign_name", ""),
+                ad_group_name="",
+                clicks=row.get("clicks", 0),
+                orders=row.get("orders", 0),
+                impressions=row.get("impressions", 0),
+                spend=row.get("spend", 0),
+                sales=row.get("sales", 0),
+            )
+
+            if placement == "top_of_search" and campaign_mode == "launch" and clicks >= self.launch_click_harvest_threshold:
+                pct = self.launch_top_of_search_boost_pct
+                action = "SET_PLACEMENT_MULTIPLIER"
+            elif placement == "top_of_search" and campaign_mode == "stalled" and clicks >= self.stalled_click_harvest_threshold:
+                pct = self.stalled_top_of_search_test_pct
+                action = "SET_PLACEMENT_MULTIPLIER"
+            elif placement == "top_of_search" and campaign_mode == "recovery" and clicks >= self.recovery_click_harvest_threshold:
+                pct = self.recovery_top_of_search_test_pct
+                action = "SET_PLACEMENT_MULTIPLIER"
+            elif placement == "top_of_search" and roas >= effective_target * 1.10 and orders >= self.min_orders_for_scaling:
                 pct = 25 if campaign_intent in {"rank", "scale"} else 20
                 action = "SET_PLACEMENT_MULTIPLIER"
             elif placement == "product_pages" and clicks >= self.min_clicks and roas < effective_target:
@@ -3085,7 +3370,19 @@ class AdsOptimizerEngine:
 
         if "orders" in actionable.columns:
             actionable["orders"] = pd.to_numeric(actionable["orders"], errors="coerce").fillna(0)
-            actionable = actionable[actionable["orders"] >= 2].copy()
+            actionable["campaign_mode"] = actionable.apply(lambda r: get_campaign_mode(r), axis=1)
+            click_series = pd.to_numeric(actionable.get("clicks", 0), errors="coerce").fillna(0)
+            actionable = actionable[
+                (actionable["orders"] >= 2)
+                | (
+                    actionable["campaign_mode"].isin(["launch", "stalled", "recovery"])
+                    & (
+                        (actionable["campaign_mode"].eq("launch") & (click_series >= self.launch_click_harvest_threshold))
+                        | (actionable["campaign_mode"].eq("stalled") & (click_series >= self.stalled_click_harvest_threshold))
+                        | (actionable["campaign_mode"].eq("recovery") & (click_series >= self.recovery_click_harvest_threshold))
+                    )
+                )
+            ].copy()
 
         if actionable.empty:
             return pd.DataFrame()
@@ -3504,6 +3801,11 @@ class AdsOptimizerEngine:
         )
 
         combined_bulk_updates = self.apply_final_safeguards(combined_bulk_updates)
+        if combined_bulk_updates is None or combined_bulk_updates.empty:
+            combined_bulk_updates = pd.DataFrame(columns=["Optimizer Action"])
+        elif "Optimizer Action" not in combined_bulk_updates.columns:
+            combined_bulk_updates = combined_bulk_updates.copy()
+            combined_bulk_updates["Optimizer Action"] = ""
         simulation_summary = self.build_simulation_summary(combined_bulk_updates, account_health)
 
         campaign_health_dashboard = self.build_campaign_health_dashboard(
@@ -3674,7 +3976,7 @@ class _Phase2BaseOptimizer:
         ext = os.path.splitext(name)[1].lower()
         cloned = self._clone_file_obj(file_obj)
         if ext == '.csv':
-            return pd.read_csv(cloned)
+            return robust_read_csv(cloned)
         return pd.read_excel(cloned, engine='openpyxl')
 
     def load_bulk_workbook(self):
@@ -5089,14 +5391,14 @@ class Phase2AdsOrchestrator:
         cloned = self._clone_file_obj(business_file)
     
         if ext == '.csv':
-            df = pd.read_csv(cloned)
+            df = robust_read_csv(cloned)
         elif ext in ['.xlsx', '.xls']:
             df = pd.read_excel(cloned, engine='openpyxl')
         else:
             # fallback: try csv first, then excel
             try:
                 cloned.seek(0)
-                df = pd.read_csv(cloned)
+                df = robust_read_csv(cloned)
             except Exception:
                 cloned.seek(0)
                 df = pd.read_excel(cloned, engine='openpyxl')
