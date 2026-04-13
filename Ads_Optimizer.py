@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
-from ads_optimizer_ingestion_v8_2_final import (
+from ads_optimizer_ingestion import (
     INGESTION_VERSION,
     Phase2UploadValidator,
     Phase2AdsOrchestrator,
